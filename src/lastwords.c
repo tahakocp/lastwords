@@ -262,6 +262,15 @@ enum lw_start lw_init(uint32_t reset_cause)
     return start;
 }
 
+#ifdef LW_TEST_HOOK
+void lw_test_resync(void)
+{
+    struct walk w;
+    walk_back(lw_mem.head, &w);
+    lw_seq = (uint16_t)(w.count ? w.last_seq + 1 : 0);
+}
+#endif
+
 void lw_set_clock(uint32_t (*fn)(void))
 {
     lw_clock = fn;
