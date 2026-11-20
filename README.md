@@ -5,6 +5,10 @@
 
 **The last log lines and the fault that killed your microcontroller, still in RAM after the reset.**
 
+![QEMU demo on Cortex-M3: five boots, then the recovered log with the HardFault pinned to main.c:55](docs/demo.gif)
+
+<sub>Real run of `make run-m3` in [examples/qemu](examples/qemu) (cast file: [docs/demo.cast](docs/demo.cast)). Boot 0 crashed; boot 4 printed what boot 0 was doing when it died.</sub>
+
 lastwords is a crash flight recorder for Cortex-M in two C files. Your log calls go into a small ring buffer in a RAM section the startup code never zeroes. When the chip faults, the handler appends the registers and a slice of the stack to the same ring and resets. On the next boot `lw_init()` validates what is left, tells you the previous run crashed, and you print or upload it whenever it suits you.
 
 No flash writes inside the fault handler, no heap, no vendor HAL, no cloud. It works for the device on your desk and for the one in a field that only gets a UART once a month.
