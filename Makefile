@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu size cross clean
+.PHONY: test test-asan qemu size footprint count cross clean
 
 CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
@@ -31,6 +31,9 @@ cross:
 
 size:
 	$(MAKE) -C examples/qemu size
+
+footprint count:
+	@$(MAKE) -s -C examples/qemu $@
 
 clean:
 	rm -rf $(BUILD)

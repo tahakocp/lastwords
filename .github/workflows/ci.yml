@@ -34,8 +34,11 @@ jobs:
         run: make cross
       - name: five boots, four crashes, on M0/M3/M4/M7
         run: make qemu
-      - name: footprint
-        run: make size
+      - name: footprint and instruction count
+        run: |
+          make size
+          make footprint
+          make count
       - uses: actions/upload-artifact@v4
         if: always()
         with:

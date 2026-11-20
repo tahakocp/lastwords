@@ -31,11 +31,11 @@ This is what boot 1 of the [QEMU demo](examples/qemu) prints about boot 0, after
 
 ## Numbers
 
-All measured, and all reproducible with the commands in [Running the tests](#running-the-tests).
+All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,224 bytes (1,220 on M0+) |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,212 bytes |
 | Whole object incl. `lw_print` and the fault-bit names | 3.4 KB (2.9 KB with `LW_NO_FAULT_NAMES`) |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions (QEMU instruction count; real cycles depend on flash wait states) |
@@ -145,7 +145,9 @@ If you already run Memfault, use Memfault. If you want an on-device call-stack p
 make test         # host tests at ring sizes 256, 1024, 4096
 make test-asan    # same under AddressSanitizer + UBSan
 make qemu         # needs arm-none-eabi-gcc and qemu-system-arm
-make size
+make cross        # compile-only for M0+, M23, M33, M55 and friends
+make footprint    # flash cost on Cortex-M3
+make count        # instructions per lw_log(), from a QEMU execution trace
 ./build/test_1024 1000000   # the random-ring trial from the table
 ```
 
@@ -157,7 +159,7 @@ make size
 - If the main stack itself overflowed, the fault handler has no stack to run on and the core locks up instead of recording. Put the stack at the bottom of RAM (so overflow faults immediately) or use the MPU or ARMv8-M stack limit registers.
 - The fault handler trusts the stacked frame pointer and only checks alignment and the top of the stack. A wild PSP in an RTOS task can cause a second fault, which on ARMv7-M means lockup and a reset without a record.
 - Faults are recorded as HardFault unless you enable the separate MemManage/BusFault/UsageFault exceptions in `SCB->SHCSR`. The CFSR bits still say what happened.
-- ARMv6-M (M0/M0+) has no fault status registers, so the record has the frame and stack only. `lwsym.py` still flags a cleared Thumb bit in xPSR as a bad jump.
+- ARMv6-M (M0/M0+) and ARMv8-M Baseline (M23) have no fault status registers, so the record has the frame and stack only. `lwsym.py` still flags a cleared Thumb bit in xPSR as a bad jump.
 - The backtrace is a heuristic: odd stack words that point right after a `BL`/`BLX`. Stale return addresses from earlier calls can show up, and frames whose return address lives in a callee-saved register will not.
 - Records are capped at 255 bytes; `lw_logf` truncates.
 - 16-bit sequence numbers and CRC, see the numbers table for what that costs.
