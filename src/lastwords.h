@@ -137,6 +137,11 @@ void lw_reboot(void)
 #endif
     ;
 
+/* Cortex-M only: the naked fault entry. lastwords aliases the CMSIS fault
+ * handler names to it unless LW_NO_FAULT_HANDLERS is defined. Branch to it
+ * or put it in the vector table; do not call it, it needs EXC_RETURN in lr. */
+void lw_fault_entry(void);
+
 /* Cortex-M only: C half of the fault handler. Exposed for RTOS ports that
  * install their own HardFault entry. */
 void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
