@@ -35,8 +35,8 @@ All measured, and all reproducible with the commands in [Running the tests](#run
 
 | | |
 |---|---|
-| Flash, Cortex-M3 `-Os`, recording only (init, log, fault capture) | about 1.2 KB |
-| Flash with `lw_print` and the fault-bit names | 3.4 KB (2.9 KB with `LW_NO_FAULT_NAMES`) |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,224 bytes (1,220 on M0+) |
+| Whole object incl. `lw_print` and the fault-bit names | 3.4 KB (2.9 KB with `LW_NO_FAULT_NAMES`) |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions (QEMU instruction count; real cycles depend on flash wait states) |
 | Record overhead | 11 bytes (8 header, CRC-16, trailing length) |
