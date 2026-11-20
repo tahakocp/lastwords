@@ -35,10 +35,10 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, GCC 15.2 `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,212 bytes |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,212 bytes with GCC 15.2 (1,292 with Ubuntu's GCC 14.2 in CI) |
 | Whole object incl. `lw_print` and the fault-bit names | 3.4 KB (2.9 KB with `LW_NO_FAULT_NAMES`) |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
-| `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions (QEMU instruction count; real cycles depend on flash wait states) |
+| `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions with GCC 15.2, 1,298 with 14.2 (QEMU instruction count; real cycles depend on flash wait states) |
 | Record overhead | 11 bytes (8 header, CRC-16, trailing length) |
 | Resets injected mid-write by the host tests | 14,576, one at every single store of a `lw_log()` call, at 300 ring offsets: 0 corrupt records recovered |
 | Fully random RAM at boot (1,000 fills) | always detected as a cold start |
