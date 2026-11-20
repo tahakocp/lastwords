@@ -2,7 +2,9 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu size clean
+.PHONY: test test-asan qemu size cross clean
+
+CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
 test:
 	@mkdir -p $(BUILD)
@@ -19,6 +21,13 @@ test-asan:
 
 qemu:
 	$(MAKE) -C examples/qemu run-all
+
+# Compile-only check for cores QEMU's free machines do not cover.
+cross:
+	@for c in $(CROSS_CPUS); do \
+	  arm-none-eabi-gcc -mcpu=$$c -mthumb -Os -std=c99 -Wall -Wextra -Wpedantic -Werror \
+	    -c src/lastwords.c -o /dev/null || exit 1; echo "$$c ok"; \
+	done
 
 size:
 	$(MAKE) -C examples/qemu size
