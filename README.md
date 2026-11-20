@@ -1,6 +1,6 @@
 # lastwords
 
-[![ci](https://github.com/TahaKocpinar/lastwords/actions/workflows/ci.yml/badge.svg)](https://github.com/TahaKocpinar/lastwords/actions/workflows/ci.yml)
+[![ci](https://github.com/tahakocp/lastwords/actions/workflows/ci.yml/badge.svg)](https://github.com/tahakocp/lastwords/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **The last log lines and the fault that killed your microcontroller, still in RAM after the reset.**
@@ -95,7 +95,7 @@ That one-in-a-million line is the price of a 16-bit CRC: if RAM decays just enou
 
    It needs only Python 3 and `arm-none-eabi-addr2line` (or `llvm-addr2line`) on `PATH`.
 
-CMake: `add_subdirectory(lastwords)` and `target_link_libraries(app PRIVATE lastwords)`. PlatformIO: `lib_deps = https://github.com/TahaKocpinar/lastwords.git`.
+CMake: `add_subdirectory(lastwords)` and `target_link_libraries(app PRIVATE lastwords)`. PlatformIO: `lib_deps = https://github.com/tahakocp/lastwords.git`.
 
 ## API
 
