@@ -38,7 +38,7 @@ static void sh_exit(int ok)
 }
 
 static volatile uint32_t ticks;
-static uint32_t clock(void)
+static uint32_t uptime(void)
 {
     return ticks;
 }
@@ -86,7 +86,7 @@ int main(void)
 {
     static const char *names[] = {"cold", "warm", "crashed"};
     enum lw_start start = lw_init(0);
-    lw_set_clock(clock);
+    lw_set_clock(uptime);
 
     struct lw_stats st;
     lw_get_stats(&st);
