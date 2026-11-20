@@ -35,7 +35,7 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,212 bytes |
+| Flash added to a minimal Cortex-M3 image, GCC 15.2 `-Os`, `LW_NO_PRINTF`: init, log, fault capture | 1,212 bytes |
 | Whole object incl. `lw_print` and the fault-bit names | 3.4 KB (2.9 KB with `LW_NO_FAULT_NAMES`) |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions (QEMU instruction count; real cycles depend on flash wait states) |
@@ -45,7 +45,7 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 | Valid header, random ring contents (1,000,000 trials) | 1 bogus record accepted at 1 KB ring, 0 at 256 B |
 | Crash scenarios run in QEMU on Cortex-M0, M3, M4, M7 | 4 of 4 recovered and pinned to the right source line on every core |
 
-The last-but-one line is the honest floor of a 16-bit CRC: if RAM decays just enough to keep the header and scramble the ring, about one in a million boots can show a line of noise. A cold power-on randomises the header too, and is caught by the magic and size check.
+That one-in-a-million line is the price of a 16-bit CRC: if RAM decays just enough to keep the header but scramble the ring, roughly one boot in a million can show a line of noise. A cold power-on randomises the header too, and is caught by the magic and size check.
 
 ## Quick start
 
@@ -168,9 +168,9 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 
 **Why not write the crash to flash right away?** Erasing and programming flash from a fault handler means running the flash driver with a broken system state, often with interrupts and clocks in an unknown state, and it takes milliseconds to seconds. RAM survives a warm reset anyway. Copy the region to flash later, from normal code, if you need it to survive power loss: `lw_region()` gives you the bytes.
 
-**Does it work with FreeRTOS / Zephyr / bare metal?** Bare metal and FreeRTOS: yes, tasks run on PSP and the entry stub picks the right stack. Zephyr has its own fault handling and coredump; use the logging part with `LW_NO_FAULT_HANDLERS` if you want the ring there.
+**Does it work with FreeRTOS / Zephyr / bare metal?** Bare metal is what the demo runs. FreeRTOS should work, since tasks run on PSP and the entry stub picks the right stack, but I have not tested it under FreeRTOS yet. Zephyr has its own fault handling and coredump; use the logging part with `LW_NO_FAULT_HANDLERS` if you want the ring there.
 
-**RISC-V, ESP32?** The ring, `lw_log` and `lw_print` are plain C and run anywhere (the host tests run them on x86-64). Fault capture is Cortex-M only for now; on ESP-IDF, call `lw_write()` from a panic hook.
+**RISC-V, ESP32?** The ring, `lw_log` and `lw_print` are plain C and run anywhere (the host tests run them on x86-64). Fault capture is Cortex-M only for now. On ESP-IDF the ring works, but getting the crash into it would mean hooking IDF's own panic handler, which this repo does not do.
 
 **Can I parse the ring on the host instead of printing on the device?** Yes: dump `lw_region()` as hex and walk it with the format above (24-byte header, then the ring). There is no host-side parser in this repo yet.
 
