@@ -31,7 +31,7 @@ This is what boot 1 of the [QEMU demo](examples/qemu) prints about boot 0, after
 [       0] #    6 -- boot 1 reset_cause=0x00000000
 ```
 
-`main.c:55` is `*c->dma_ctrl = 1u << c->channel;` with a pointer to unmapped memory, and `bfar` holds that address. The log line before the fault says what the firmware was doing. That pairing is the point: a register dump tells you where, the log tells you why you were there.
+`main.c:55` is `*c->dma_ctrl = 1u << c->channel;` with a pointer to unmapped memory, and `bfar` holds that address. The log line before the fault says what the firmware was doing. A register dump tells you where it died; the log tells you why it was there.
 
 ## Numbers
 
