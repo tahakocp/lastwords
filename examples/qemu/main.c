@@ -1,6 +1,7 @@
 /*
- * Five boots in one QEMU run. Boots 0-3 each die in a different way; boot 4
- * prints what the ring remembers and exits. Output goes through semihosting
+ * Six boots in one QEMU run. Boots 0-3 each die in a different way, boot 4
+ * repeats the boot 0 crash, boot 5 prints what the ring remembers, then the
+ * compact export as hex, and exits. Output goes through semihosting
  * so the same binary works on every emulated board.
  */
 #include <stdint.h>
@@ -28,6 +29,22 @@ static void say_line(const char *line, void *ctx)
 {
     (void)ctx;
     say(line);
+}
+
+/* Hex for the compact export, 32 bytes per line. */
+static void say_hex(const void *data, size_t len, void *ctx)
+{
+    static const char d[] = "0123456789abcdef";
+    char buf[65];
+    const uint8_t *p = data;
+    (void)ctx;
+    for (size_t i = 0; i < len; i++) {
+        buf[2 * i] = d[p[i] >> 4];
+        buf[2 * i + 1] = d[p[i] & 0xf];
+    }
+    buf[2 * len] = 0;
+    say(buf);
+    say("\n");
 }
 
 static void sh_exit(int ok)
@@ -101,7 +118,8 @@ int main(void)
         lw_logf(LW_INFO, "boot %lu, sensor sample %lu", (unsigned long)st.boot, (unsigned long)(ticks * 17));
 
     switch (st.boot) {
-    case 0: {
+    case 0:
+    case 4: { /* boot 4 hits the boot 0 bug again: recorded as a repeat */
         static const struct config cfg = {(volatile uint32_t *)BAD_ADDR, 3};
         lw_log(LW_INFO, "applying DMA config");
         config_apply(&cfg);
@@ -136,7 +154,10 @@ int main(void)
         lw_print(say_line, 0);
         lw_get_stats(&st);
         say(st.records > 0 ? "---- end ----\n" : "empty\n");
-        sh_exit(st.boot == 4);
+        say("---- export ----\n");
+        lw_export(say_hex, 0);
+        say("---- end export ----\n");
+        sh_exit(st.boot == 5);
     }
 
     say("expected a fault, got none\n");

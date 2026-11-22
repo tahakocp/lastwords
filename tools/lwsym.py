@@ -92,6 +92,13 @@ def annotate(lines, res, out):
     stack = []
     in_fault = False
     bad_jump = None
+    first = {}  # crash signature -> "#seq: where" of the full record
+    cur = {}
+
+    def remember(**kw):
+        cur.update(kw)
+        if cur.get("sig") and cur.get("where"):
+            first.setdefault(cur["sig"], f"#{cur['seq']}: {cur['where']}")
 
     def flush_stack():
         if not stack:
@@ -116,6 +123,19 @@ def annotate(lines, res, out):
         flush_stack()
         out.write(line)
 
+        m = re.match(r"^\[\s*\d+\] #\s*(\d+) !! ", stripped)
+        if m:
+            cur.clear()
+            cur["seq"] = m.group(1)
+        m = re.match(r"^\s+sig=(" + HEX + ")$", stripped)
+        if m:
+            remember(sig=m.group(1))
+        m = re.search(r"!! repeat sig=(" + HEX + ")", stripped)
+        if m:
+            cur.clear()
+            out.write(f"   same crash as {first.get(m.group(1), 'one no longer in the ring')}\n")
+            continue
+
         if "!! " in stripped and "panic" not in stripped:
             in_fault = True
             # On these the core stacked the bad target as pc; lr is the way back.
@@ -137,6 +157,8 @@ def annotate(lines, res, out):
                     out.write(f"   pc -> bad jump target ({bad_jump}), the caller is at lr\n")
                 elif hit:
                     out.write(f"   {label} -> {hit[0]}  {hit[1]}\n")
+                if hit and not (label == "pc" and bad_jump) and "where" not in cur:
+                    remember(where=f"{hit[0]}  {hit[1]}")
                 elif label == "pc":
                     out.write("   pc -> not in this ELF (jump to a bad address?)\n")
             continue
@@ -145,6 +167,7 @@ def annotate(lines, res, out):
             hit = res.lookup([call_site(int(m.group(1), 16))])[0]
             if hit:
                 out.write(f"   called from {hit[0]}  {hit[1]}\n")
+                remember(where=f"{hit[0]}  {hit[1]}")
     flush_stack()
 
 

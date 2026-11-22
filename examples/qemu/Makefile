@@ -34,6 +34,7 @@ run-%: $(BUILD)/demo-%.elf
 	  -semihosting-config enable=on,target=native,chardev=out -kernel $<
 	python3 ../../tools/lwsym.py $< $(BUILD)/run-$*.log > $(BUILD)/run-$*.txt
 	@cat $(BUILD)/run-$*.txt
+	python3 ../../tests/check_export.py $(BUILD)/run-$*.log
 
 run-all: $(addprefix run-,$(TARGETS))
 	python3 ../../tests/check_qemu.py $(BUILD)/run-*.txt
