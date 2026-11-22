@@ -16,7 +16,7 @@ jobs:
         run: |
           name=lastwords-${GITHUB_REF_NAME#v}
           mkdir -p dist/$name
-          cp src/lastwords.c src/lastwords.h tools/lwsym.py LICENSE README.md CHANGELOG.md dist/$name/
+          cp src/lastwords.c src/lastwords.h tools/lwsym.py tools/lwdecode.py LICENSE README.md CHANGELOG.md dist/$name/
           (cd dist && zip -r $name.zip $name)
       - name: publish
         env:
