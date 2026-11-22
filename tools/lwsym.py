@@ -157,10 +157,10 @@ def annotate(lines, res, out):
                     out.write(f"   pc -> bad jump target ({bad_jump}), the caller is at lr\n")
                 elif hit:
                     out.write(f"   {label} -> {hit[0]}  {hit[1]}\n")
-                if hit and not (label == "pc" and bad_jump) and "where" not in cur:
-                    remember(where=f"{hit[0]}  {hit[1]}")
                 elif label == "pc":
                     out.write("   pc -> not in this ELF (jump to a bad address?)\n")
+                if hit and not (label == "pc" and bad_jump) and "where" not in cur:
+                    remember(where=f"{hit[0]}  {hit[1]}")
             continue
         m = re.search(r"!! panic pc=(" + HEX + ")", stripped)
         if m:
