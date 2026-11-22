@@ -217,6 +217,101 @@ static void walk_back(uint32_t head, struct walk *w)
     w->oldest = pos;
 }
 
+/* --- crash signatures and repeat records -------------------------------- */
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static uint32_t fnv_word(uint32_t h, uint32_t w)
+{
+    for (int i = 0; i < 4; i++) {
+        h ^= (uint8_t)(w >> (8 * i));
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Offsets into struct lw_fault_info / lw_panic_info. */
+#define F_LR 20u
+#define F_PC 24u
+#define F_IPSR 40u
+#define F_CFSR 44u
+#define F_HFSR 48u
+#define F_SIG_LEN 52u
+
+/* p holds the first min(len, F_SIG_LEN) payload bytes. */
+static uint32_t sig_from(uint32_t type, uint32_t len, const uint8_t *p)
+{
+    uint32_t h = 2166136261u;
+    if (type == LW_T_REPEAT)
+        return len >= 4 ? le32(p) : 0;
+    if (type == LW_T_FAULT && len >= F_SIG_LEN) {
+        h = fnv_word(h, type);
+        h = fnv_word(h, le32(p + F_IPSR));
+        h = fnv_word(h, le32(p + F_CFSR));
+        h = fnv_word(h, le32(p + F_HFSR) & 0x40000002u);
+        h = fnv_word(h, le32(p + F_LR) & ~1u);
+        h = fnv_word(h, le32(p + F_PC) & ~1u);
+    } else if (type == LW_T_PANIC && len >= 4) {
+        h = fnv_word(h, type);
+        h = fnv_word(h, le32(p) & ~1u);
+    } else {
+        return 0;
+    }
+    return h ? h : 1;
+}
+
+uint32_t lw_signature(const struct lw_entry *e)
+{
+    return sig_from(e->type, e->len, e->data);
+}
+
+#ifndef LW_NO_DEDUP
+static uint32_t ring_sig(uint32_t pos)
+{
+    uint8_t p[F_SIG_LEN];
+    uint32_t len = rd(pos + 1);
+    for (uint32_t i = 0; i < F_SIG_LEN && i < len; i++)
+        p[i] = rd(pos + HDR_LEN + i);
+    return sig_from(rd(pos) >> 4, len, p);
+}
+#endif
+
+/* Append a fault or panic record, or a short REPEAT record if the same
+ * crash is still in the ring. Caller holds the lock or is the fault handler. */
+static void record_crash(uint8_t type, const void *a, size_t alen, const void *b, size_t blen)
+{
+#ifndef LW_NO_DEDUP
+    uint32_t sig = sig_from(type, (uint32_t)alen, a);
+    struct walk w;
+    uint32_t found = 0, count = 0;
+
+    walk_back(lw_mem.head, &w);
+    uint32_t pos = w.oldest;
+    for (uint32_t i = 0; i < w.count; i++) {
+        uint32_t t = rd(pos) >> 4, len = rd(pos + 1);
+        if ((t == LW_T_FAULT || t == LW_T_PANIC) && ring_sig(pos) == sig) {
+            found = 1;
+            count = 0;
+        } else if (found && t == LW_T_REPEAT && len >= 6 && ring_sig(pos) == sig) {
+            count = rd(pos + HDR_LEN + 4) | (uint32_t)rd(pos + HDR_LEN + 5) << 8;
+        }
+        pos += len + OVERHEAD;
+    }
+    if (found && sig) {
+        if (count < 0xffffu)
+            count++;
+        uint8_t rep[6] = {(uint8_t)sig, (uint8_t)(sig >> 8), (uint8_t)(sig >> 16), (uint8_t)(sig >> 24),
+                          (uint8_t)count, (uint8_t)(count >> 8)};
+        emit(LW_T_REPEAT, LW_FATAL, rep, sizeof rep, NULL, 0);
+        return;
+    }
+#endif
+    emit(type, LW_FATAL, a, alen, b, blen);
+}
+
 static void cold_start(void)
 {
     memset(&lw_mem, 0, sizeof lw_mem);
@@ -244,7 +339,7 @@ enum lw_start lw_init(uint32_t reset_cause)
         lw_mem.head = head;
         lw_mem.head_inv = ~head;
         lw_seq = (uint16_t)(w.count ? w.last_seq + 1 : 0);
-        start = (w.count && (w.last_type == LW_T_FAULT || w.last_type == LW_T_PANIC)) ? LW_START_CRASHED
+        start = (w.count && (w.last_type == LW_T_FAULT || w.last_type == LW_T_PANIC || w.last_type == LW_T_REPEAT)) ? LW_START_CRASHED
                                                                                       : LW_START_WARM;
         uint32_t boot = lw_mem.boot;
         if (lw_mem.boot_inv != ~boot && ~lw_mem.boot_inv > boot)
@@ -263,6 +358,12 @@ enum lw_start lw_init(uint32_t reset_cause)
 }
 
 #ifdef LW_TEST_HOOK
+/* Host tests: the fault handler's recording path without a fault. */
+void lw_test_fault(const struct lw_fault_info *f, size_t len)
+{
+    record_crash(LW_T_FAULT, f, len, NULL, 0);
+}
+
 void lw_test_resync(void)
 {
     struct walk w;
@@ -309,7 +410,7 @@ void lw_panic(const char *msg)
     struct lw_panic_info pi;
     pi.pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
     LW_LOCK();
-    emit(LW_T_PANIC, LW_FATAL, &pi, sizeof pi, msg, msg ? strlen(msg) : 0);
+    record_crash(LW_T_PANIC, &pi, sizeof pi, msg, msg ? strlen(msg) : 0);
     LW_UNLOCK();
     lw_reboot();
 }
@@ -369,6 +470,125 @@ const void *lw_region(size_t *size)
     if (size)
         *size = sizeof lw_mem;
     return &lw_mem;
+}
+
+/* --- compact export ------------------------------------------------------ */
+
+struct xo {
+    lw_sink_fn sink;
+    void *ctx;
+    uint32_t total;
+    uint16_t crc;
+    uint8_t n;
+    uint8_t buf[32];
+};
+
+static void x_flush(struct xo *x)
+{
+    if (x->n)
+        x->sink(x->buf, x->n, x->ctx);
+    x->n = 0;
+}
+
+static void x_raw(struct xo *x, uint8_t b)
+{
+    x->total++;
+    x->buf[x->n++] = b;
+    if (x->n == sizeof x->buf)
+        x_flush(x);
+}
+
+static void x_byte(struct xo *x, uint8_t b)
+{
+    x->crc = crc_byte(x->crc, b);
+    x_raw(x, b);
+}
+
+static void x_var(struct xo *x, uint32_t v)
+{
+    while (v >= 0x80) {
+        x_byte(x, (uint8_t)(v | 0x80));
+        v >>= 7;
+    }
+    x_byte(x, (uint8_t)v);
+}
+
+static uint32_t ring_le32(uint32_t pos)
+{
+    return (uint32_t)rd(pos) | (uint32_t)rd(pos + 1) << 8 | (uint32_t)rd(pos + 2) << 16 |
+           (uint32_t)rd(pos + 3) << 24;
+}
+
+/* Fault payloads are mostly 32-bit words, many of them zero (fault address
+ * registers, r12, padding on the stack). They go out as a word count, a
+ * bitmap of the non-zero words, and those words. Everything else is raw. */
+static void x_payload(struct xo *x, uint32_t type, uint32_t pos, uint32_t len)
+{
+    uint32_t p = pos + HDR_LEN;
+    if (type == LW_T_FAULT && len % 4 == 0 && len > 0) {
+        uint32_t nw = len / 4, nz = 0;
+        for (uint32_t i = 0; i < nw; i++)
+            nz += ring_le32(p + 4 * i) != 0;
+        x_var(x, 1 + (nw + 7) / 8 + 4 * nz);
+        x_byte(x, (uint8_t)nw);
+        for (uint32_t i = 0; i < nw; i += 8) {
+            uint8_t m = 0;
+            for (uint32_t j = 0; j < 8 && i + j < nw; j++)
+                m |= (uint8_t)((ring_le32(p + 4 * (i + j)) != 0) << j);
+            x_byte(x, m);
+        }
+        for (uint32_t i = 0; i < nw; i++) {
+            uint32_t v = ring_le32(p + 4 * i);
+            if (v)
+                for (int k = 0; k < 4; k++)
+                    x_byte(x, (uint8_t)(v >> (8 * k)));
+        }
+        return;
+    }
+    x_var(x, len + (type == LW_T_FAULT));
+    if (type == LW_T_FAULT)
+        x_byte(x, 0); /* unpacked */
+    for (uint32_t i = 0; i < len; i++)
+        x_byte(x, rd(p + i));
+}
+
+uint32_t lw_export(lw_sink_fn sink, void *ctx)
+{
+    struct xo x;
+    struct walk w;
+
+    x.sink = sink;
+    x.ctx = ctx;
+    x.total = 0;
+    x.crc = 0xffff;
+    x.n = 0;
+
+    walk_back(lw_mem.head, &w);
+    uint32_t pos = w.oldest;
+    x_byte(&x, 'L');
+    x_byte(&x, 'W');
+    x_byte(&x, 'X');
+    x_byte(&x, '1');
+    x_var(&x, lw_mem.boot);
+    x_var(&x, w.count);
+    x_var(&x, w.count ? (uint32_t)(rd(pos + 2) | rd(pos + 3) << 8) : 0);
+
+    uint32_t prev = 0;
+    for (uint32_t i = 0; i < w.count; i++) {
+        uint32_t type = rd(pos) >> 4, len = rd(pos + 1);
+        uint32_t t = ring_le32(pos + 4);
+        uint32_t d = t - prev;
+        prev = t;
+        x_byte(&x, rd(pos));
+        x_var(&x, (d << 1) ^ (0u - (d >> 31))); /* zigzag: clocks restart at boot */
+        x_payload(&x, type, pos, len);
+        pos += len + OVERHEAD;
+    }
+    uint16_t crc = x.crc;
+    x_raw(&x, (uint8_t)crc);
+    x_raw(&x, (uint8_t)(crc >> 8));
+    x_flush(&x);
+    return x.total;
 }
 
 /* lw_print formats by hand so it works with LW_NO_PRINTF and from a
@@ -434,11 +654,6 @@ static void l_kv(struct line *l, const char *k, uint32_t v)
     l_hex(l, v);
 }
 
-static uint32_t le32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-
 #ifndef LW_NO_FAULT_NAMES
 static const struct {
     uint8_t bit;
@@ -485,6 +700,9 @@ static void print_fault(struct line *l, const struct lw_entry *e)
     if (f.hfsr & (1u << 1))
         l_str(l, " VECTTBL");
 #endif
+    l_flush(l);
+    l_str(l, "  ");
+    l_kv(l, "sig", lw_signature(e));
     l_flush(l);
     l_str(l, "  ");
     l_kv(l, "pc", f.pc);
@@ -555,6 +773,16 @@ static int print_one(const struct lw_entry *e, void *ctx)
         l_str(l, ": ");
         for (uint32_t i = 4; i < e->len; i++)
             l_ch(l, (char)e->data[i]);
+        l_flush(l);
+        l_str(l, "  ");
+        l_kv(l, "sig", lw_signature(e));
+        l_flush(l);
+        break;
+    case LW_T_REPEAT:
+        l_str(l, "!! repeat");
+        l_kv(l, "sig", lw_signature(e));
+        l_str(l, " count=");
+        l_dec(l, e->len >= 6 ? (uint32_t)(e->data[4] | e->data[5] << 8) : 0, 0);
         l_flush(l);
         break;
     default:
@@ -670,7 +898,7 @@ void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
 #endif
 
     size_t len = sizeof f - (LW_FAULT_STACK_WORDS - f.nstack) * sizeof(uint32_t);
-    emit(LW_T_FAULT, LW_FATAL, &f, len, NULL, 0);
+    record_crash(LW_T_FAULT, &f, len, NULL, 0);
     lw_reboot();
 }
 

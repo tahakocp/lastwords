@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define LW_VERSION "0.1.0"
+#define LW_VERSION "0.2.0"
 
 /* Ring size in bytes. Must be a power of two between 256 and 65536. */
 #ifndef LW_RING_SIZE
@@ -39,7 +39,8 @@ enum lw_type {
     LW_T_BOOT = 1,  /* payload: struct lw_boot_info */
     LW_T_FAULT = 2, /* payload: struct lw_fault_info */
     LW_T_PANIC = 3, /* payload: struct lw_panic_info + message */
-    LW_T_BLOB = 4   /* payload: application bytes */
+    LW_T_BLOB = 4,  /* payload: application bytes */
+    LW_T_REPEAT = 5 /* payload: struct lw_repeat_info; a crash whose full record is still in the ring */
 };
 
 /* What lw_init() found in RAM. */
@@ -68,6 +69,14 @@ struct lw_fault_info {
 
 struct lw_panic_info {
     uint32_t pc; /* address lw_panic() was called from */
+};
+
+/* Written instead of a second full fault or panic record when the same crash
+ * (same signature) is already in the ring. Keeps a crash loop from pushing
+ * the log that led up to it out of the ring. */
+struct lw_repeat_info {
+    uint32_t sig;
+    uint16_t count; /* repeats since the full record, 1 for the first */
 };
 
 /* One record handed to lw_foreach callbacks. data is a private copy. */
@@ -121,6 +130,20 @@ typedef void (*lw_out_fn)(const char *line, void *ctx);
 void lw_print(lw_out_fn out, void *ctx);
 
 void lw_get_stats(struct lw_stats *st);
+
+/* Crash signature of a FAULT, PANIC or REPEAT record, 0 for anything else.
+ * FNV-1a over the record type, exception number, CFSR, HFSR.FORCED/VECTTBL,
+ * pc and lr (panic: the caller address). Registers, sp and the stack slice
+ * are left out, so the same bug hits the same signature on every device
+ * running the same build. tools/lwdecode.py computes the same value. */
+uint32_t lw_signature(const struct lw_entry *e);
+
+/* Stream the ring in the compact export format (see README) to sink, in
+ * chunks of up to 32 bytes. Returns the number of bytes produced. Call it
+ * from normal context; records logged from interrupts while it runs can
+ * overwrite the oldest ones being sent, which the host sees as a CRC error. */
+typedef void (*lw_sink_fn)(const void *data, size_t len, void *ctx);
+uint32_t lw_export(lw_sink_fn sink, void *ctx);
 
 /* Forget everything, e.g. after the log was uploaded. */
 void lw_clear(void);
