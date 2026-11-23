@@ -44,3 +44,33 @@ jobs:
         with:
           name: qemu-transcripts
           path: examples/qemu/build/run-*.txt
+
+  riscv:
+    runs-on: ubuntu-latest
+    env:
+      GCC: 14.2.0-3
+      QEMU: 9.2.4-1
+    steps:
+      - uses: actions/checkout@v4
+      - name: install xPack riscv-none-elf-gcc and qemu-system-riscv32
+        run: |
+          mkdir -p ~/xpack && cd ~/xpack
+          curl -fsSL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v$GCC/xpack-riscv-none-elf-gcc-$GCC-linux-x64.tar.gz | tar xz
+          curl -fsSL https://github.com/xpack-dev-tools/qemu-riscv-xpack/releases/download/v$QEMU/xpack-qemu-riscv-$QEMU-linux-x64.tar.gz | tar xz
+          echo "$HOME/xpack/xpack-riscv-none-elf-gcc-$GCC/bin" >> $GITHUB_PATH
+          echo "$HOME/xpack/xpack-qemu-riscv-$QEMU/bin" >> $GITHUB_PATH
+      - name: compile for rv32imac and rv32imc
+        run: |
+          riscv-none-elf-gcc --version | head -1
+          qemu-system-riscv32 --version | head -1
+          for a in rv32imac_zicsr rv32imc_zicsr; do
+            riscv-none-elf-gcc -march=$a -mabi=ilp32 -Os -std=c99 -Wall -Wextra -Wpedantic -Werror -c src/lastwords.c -o /dev/null
+            echo "$a ok"
+          done
+      - name: six boots, four traps, on QEMU virt
+        run: make riscv
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: riscv-transcript
+          path: examples/riscv/build/run-rv32.txt
