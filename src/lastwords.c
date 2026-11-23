@@ -1166,9 +1166,15 @@ __attribute__((naked)) void lw_fault_entry(void)
                    "beq 3f\n"
                    "lsls r2, r0, #25\n" /* S into N */
                    "bmi 3f\n"
-                   "movs r2, #4\n"
-                   "tst r0, r2\n"
-                   "bne 4f\n"
+                   /* EXC_RETURN.SPSEL is not trusted here: QEMU fills it from
+                    * the Secure CONTROL. A Non-secure thread's own CONTROL_NS
+                    * still says which stack it was on. */
+                   "lsls r2, r0, #28\n" /* Mode into N: 0 = Non-secure handler, MSP_NS */
+                   "bpl 5f\n"
+                   "mrs r2, control_ns\n"
+                   "lsls r2, r2, #30\n" /* SPSEL into N */
+                   "bmi 4f\n"
+                   "5:\n"
                    "mrs r1, msp_ns\n"
                    "b 2f\n"
                    "4:\n"

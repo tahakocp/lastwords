@@ -122,7 +122,7 @@ def call_site(ret):
     # A return address points after the BL; step back into the call itself
     # so the reported line is the caller's line, not the next one. On
     # RISC-V, ret - 2 lands inside the jal/jalr (or on the c.jal) as well.
-    return (ret & ~1) - 2
+    return max((ret & ~1) - 2, 0)
 
 
 def annotate(lines, res, out):
