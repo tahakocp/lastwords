@@ -277,12 +277,14 @@ static uint32_t sig_from(uint32_t type, uint32_t len, const uint8_t *p)
         h = fnv_word(h, le32(p + F_HFSR) & 0x40000002u);
         h = fnv_word(h, le32(p + F_LR) & ~1u);
         h = fnv_word(h, le32(p + F_PC) & ~1u);
+#if !LW_CORTEX_M /* a Cortex-M build never writes TRAP records; saves 60 bytes there */
     } else if (type == LW_T_TRAP && len >= T_SIG_LEN) {
         /* mtval is left out: for access faults it is the data address. */
         h = fnv_word(h, type);
         h = fnv_word(h, le32(p + T_MCAUSE));
         h = fnv_word(h, le32(p + T_RA) & ~1u);
         h = fnv_word(h, le32(p + T_MEPC) & ~1u);
+#endif
     } else if (type == LW_T_PANIC && len >= 4) {
         h = fnv_word(h, type);
         h = fnv_word(h, le32(p) & ~1u);
