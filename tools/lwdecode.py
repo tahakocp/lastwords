@@ -316,7 +316,7 @@ def crashes(paths, elf, addr2line, out):
     if elf:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import lwsym
-        res = lwsym.Resolver(elf, lwsym.find_addr2line(addr2line))
+        res = lwsym.Resolver(elf, lwsym.find_addr2line(addr2line, lwsym.elf_machine(elf) == lwsym.EM_RISCV))
     for path in paths:
         for blob in load(path):
             _, entries = decode(blob)

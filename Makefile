@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu size footprint count cross clean
+.PHONY: test test-asan qemu riscv size footprint count cross clean
 
 CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
@@ -30,6 +30,11 @@ test-asan:
 qemu:
 	$(MAKE) -C examples/qemu run-all
 
+# RV32 machine-mode trap capture on QEMU virt (needs riscv-none-elf-gcc).
+riscv:
+	$(MAKE) -C examples/riscv run
+	@$(MAKE) -s -C examples/riscv footprint count
+
 # Compile-only check for cores QEMU's free machines do not cover.
 cross:
 	@for c in $(CROSS_CPUS); do \
@@ -46,3 +51,4 @@ footprint count:
 clean:
 	rm -rf $(BUILD)
 	$(MAKE) -C examples/qemu clean
+	$(MAKE) -C examples/riscv clean

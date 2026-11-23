@@ -4,9 +4,10 @@
     lwsym.py firmware.elf < uart.log
 
 Reads the text that lw_print() produced (mixed with any other output),
-passes pc, lr and the panic address to addr2line, and lists the stack words
-that look like Thumb return addresses into the firmware: a cheap backtrace
-that needs no unwind tables on the device.
+passes pc, lr and the panic address (RISC-V: mepc and ra) to addr2line,
+and lists the stack words that look like return addresses into the
+firmware: a cheap backtrace that needs no unwind tables on the device.
+Cortex-M and RV32 ELFs are told apart by e_machine.
 """
 import argparse
 import os
@@ -19,14 +20,24 @@ import sys
 HEX = r"0x[0-9a-fA-F]{8}"
 
 
-def find_addr2line(explicit):
+EM_RISCV = 0xF3
+
+
+def find_addr2line(explicit, riscv=False):
     if explicit:
         return explicit
-    for name in ("arm-none-eabi-addr2line", "llvm-addr2line", "addr2line"):
+    cross = ("riscv-none-elf-addr2line", "riscv64-unknown-elf-addr2line") if riscv else ("arm-none-eabi-addr2line",)
+    for name in cross + ("llvm-addr2line", "addr2line"):
         path = shutil.which(name)
         if path:
             return path
     sys.exit("lwsym: no addr2line found; pass --addr2line")
+
+
+def elf_machine(elf):
+    with open(elf, "rb") as f:
+        head = f.read(20)
+    return struct.unpack_from("<H", head, 18)[0] if len(head) == 20 else 0
 
 
 def code_sections(elf):
@@ -43,6 +54,25 @@ def code_sections(elf):
         if typ == 1 and flags & 0x4:  # PROGBITS, SHF_EXECINSTR
             out.append((addr, data[off:off + size]))
     return out
+
+
+def follows_call_rv(sections, ret):
+    """RISC-V: true if ret sits right after a jal/jalr that wrote ra
+    (or a compressed c.jal/c.jalr)."""
+    if ret & 1:
+        return False
+    for addr, code in sections:
+        if addr + 2 <= ret <= addr + len(code):
+            o = ret - addr
+            if o >= 4:
+                insn, = struct.unpack_from("<I", code, o - 4)
+                if insn & 0x7F in (0x6F, 0x67) and insn >> 7 & 0x1F == 1:
+                    return True  # jal ra / jalr ra
+            hw, = struct.unpack_from("<H", code, o - 2)
+            if hw & 0xF07F == 0x9002 and hw >> 7 & 0x1F:
+                return True  # c.jalr
+            return hw & 0xE003 == 0x2001  # c.jal (RV32 only)
+    return False
 
 
 def follows_call(sections, ret):
@@ -65,6 +95,12 @@ class Resolver:
         self.tool = addr2line
         self.cache = {}
         self.code = code_sections(elf)
+        self.riscv = elf_machine(elf) == EM_RISCV
+
+    def is_return(self, w):
+        if self.riscv:
+            return follows_call_rv(self.code, w)
+        return bool(w & 1) and follows_call(self.code, w)
 
     def lookup(self, addrs):
         todo = [a for a in addrs if a not in self.cache]
@@ -84,7 +120,8 @@ class Resolver:
 
 def call_site(ret):
     # A return address points after the BL; step back into the call itself
-    # so the reported line is the caller's line, not the next one.
+    # so the reported line is the caller's line, not the next one. On
+    # RISC-V, ret - 2 lands inside the jal/jalr (or on the c.jal) as well.
     return (ret & ~1) - 2
 
 
@@ -103,9 +140,10 @@ def annotate(lines, res, out):
     def flush_stack():
         if not stack:
             return
-        # Thumb return addresses are odd and sit right after a BL/BLX.
+        # Thumb return addresses are odd and sit right after a BL/BLX;
+        # RISC-V ones are even and sit after a jal/jalr into ra.
         # Stale words from earlier calls still pass, hence "guess".
-        cands = [w for w in stack if w & 1 and follows_call(res.code, w)]
+        cands = [w for w in stack if res.is_return(w)]
         hits = res.lookup([call_site(w) for w in cands]) if cands else []
         frames = [(w, h) for w, h in zip(cands, hits) if h]
         if frames:
@@ -141,6 +179,9 @@ def annotate(lines, res, out):
             # On these the core stacked the bad target as pc; lr is the way back.
             m = re.search(r"\b(INVSTATE|INVPC|IACCVIOL|IBUSERR)\b", stripped)
             bad_jump = m.group(1) if m else None
+            m = re.search(r"trap (instruction (?:misaligned|access fault|page fault))", stripped)
+            if m:
+                bad_jump = m.group(1)  # mepc is the target, ra the way back
         elif re.match(r"^\[\s*\d+\] #", stripped):
             in_fault = False
 
@@ -162,6 +203,20 @@ def annotate(lines, res, out):
                 if hit and not (label == "pc" and bad_jump) and "where" not in cur:
                     remember(where=f"{hit[0]}  {hit[1]}")
             continue
+        m = re.search(r"\bmepc=(" + HEX + r") ra=(" + HEX + r") sp=" + HEX, stripped)
+        if m:
+            pc, ra = (int(g, 16) for g in m.groups())
+            names = res.lookup([pc, call_site(ra)])
+            for label, hit in (("mepc", names[0]), ("ra", names[1])):
+                if label == "mepc" and bad_jump:
+                    out.write(f"   mepc -> bad jump target ({bad_jump}), the caller is at ra\n")
+                elif hit:
+                    out.write(f"   {label} -> {hit[0]}  {hit[1]}\n")
+                elif label == "mepc":
+                    out.write("   mepc -> not in this ELF (jump to a bad address?)\n")
+                if hit and not (label == "mepc" and bad_jump) and "where" not in cur:
+                    remember(where=f"{hit[0]}  {hit[1]}")
+            continue
         m = re.search(r"!! panic pc=(" + HEX + ")", stripped)
         if m:
             hit = res.lookup([call_site(int(m.group(1), 16))])[0]
@@ -178,7 +233,7 @@ def main():
     ap.add_argument("--addr2line", help="addr2line binary to use")
     args = ap.parse_args()
 
-    res = Resolver(args.elf, find_addr2line(args.addr2line))
+    res = Resolver(args.elf, find_addr2line(args.addr2line, elf_machine(args.elf) == EM_RISCV))
     src = open(args.log, encoding="utf-8", errors="replace") if args.log else sys.stdin
     with src:
         annotate(src, res, sys.stdout)
