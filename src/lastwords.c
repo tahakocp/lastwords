@@ -37,6 +37,10 @@
 #endif
 #endif
 
+#if defined(__riscv) && __riscv_xlen == 32
+#define LW_RISCV 1
+#endif
+
 #define LW_MAGIC 0x3157574cu /* "LWW1" */
 #define HDR_LEN 8u
 #define OVERHEAD 11u
@@ -79,6 +83,20 @@ static inline uint32_t lw_irq_save(void)
 static inline void lw_irq_restore(uint32_t primask)
 {
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+}
+#define LW_LOCK() uint32_t lw_key_ = lw_irq_save()
+#define LW_UNLOCK() lw_irq_restore(lw_key_)
+#elif LW_RISCV
+static inline uint32_t lw_irq_save(void)
+{
+    uint32_t mstatus;
+    __asm volatile("csrrci %0, mstatus, 8" : "=r"(mstatus)::"memory"); /* clear MIE */
+    return mstatus;
+}
+static inline void lw_irq_restore(uint32_t mstatus)
+{
+    if (mstatus & 8u)
+        __asm volatile("csrsi mstatus, 8" ::: "memory");
 }
 #define LW_LOCK() uint32_t lw_key_ = lw_irq_save()
 #define LW_UNLOCK() lw_irq_restore(lw_key_)
@@ -240,6 +258,11 @@ static uint32_t fnv_word(uint32_t h, uint32_t w)
 #define F_CFSR 44u
 #define F_HFSR 48u
 #define F_SIG_LEN 52u
+/* struct lw_trap_info */
+#define T_MCAUSE 0u
+#define T_MEPC 4u
+#define T_RA 16u
+#define T_SIG_LEN 20u
 
 /* p holds the first min(len, F_SIG_LEN) payload bytes. */
 static uint32_t sig_from(uint32_t type, uint32_t len, const uint8_t *p)
@@ -254,6 +277,12 @@ static uint32_t sig_from(uint32_t type, uint32_t len, const uint8_t *p)
         h = fnv_word(h, le32(p + F_HFSR) & 0x40000002u);
         h = fnv_word(h, le32(p + F_LR) & ~1u);
         h = fnv_word(h, le32(p + F_PC) & ~1u);
+    } else if (type == LW_T_TRAP && len >= T_SIG_LEN) {
+        /* mtval is left out: for access faults it is the data address. */
+        h = fnv_word(h, type);
+        h = fnv_word(h, le32(p + T_MCAUSE));
+        h = fnv_word(h, le32(p + T_RA) & ~1u);
+        h = fnv_word(h, le32(p + T_MEPC) & ~1u);
     } else if (type == LW_T_PANIC && len >= 4) {
         h = fnv_word(h, type);
         h = fnv_word(h, le32(p) & ~1u);
@@ -292,7 +321,7 @@ static void record_crash(uint8_t type, const void *a, size_t alen, const void *b
     uint32_t pos = w.oldest;
     for (uint32_t i = 0; i < w.count; i++) {
         uint32_t t = rd(pos) >> 4, len = rd(pos + 1);
-        if ((t == LW_T_FAULT || t == LW_T_PANIC) && ring_sig(pos) == sig) {
+        if ((t == LW_T_FAULT || t == LW_T_TRAP || t == LW_T_PANIC) && ring_sig(pos) == sig) {
             found = 1;
             count = 0;
         } else if (found && t == LW_T_REPEAT && len >= 6 && ring_sig(pos) == sig) {
@@ -339,7 +368,8 @@ enum lw_start lw_init(uint32_t reset_cause)
         lw_mem.head = head;
         lw_mem.head_inv = ~head;
         lw_seq = (uint16_t)(w.count ? w.last_seq + 1 : 0);
-        start = (w.count && (w.last_type == LW_T_FAULT || w.last_type == LW_T_PANIC || w.last_type == LW_T_REPEAT)) ? LW_START_CRASHED
+        start = (w.count && (w.last_type == LW_T_FAULT || w.last_type == LW_T_TRAP || w.last_type == LW_T_PANIC ||
+                                 w.last_type == LW_T_REPEAT)) ? LW_START_CRASHED
                                                                                       : LW_START_WARM;
         uint32_t boot = lw_mem.boot;
         if (lw_mem.boot_inv != ~boot && ~lw_mem.boot_inv > boot)
@@ -362,6 +392,11 @@ enum lw_start lw_init(uint32_t reset_cause)
 void lw_test_fault(const struct lw_fault_info *f, size_t len)
 {
     record_crash(LW_T_FAULT, f, len, NULL, 0);
+}
+
+void lw_test_trap(const struct lw_trap_info *t, size_t len)
+{
+    record_crash(LW_T_TRAP, t, len, NULL, 0);
 }
 
 void lw_test_resync(void)
@@ -519,13 +554,14 @@ static uint32_t ring_le32(uint32_t pos)
            (uint32_t)rd(pos + 3) << 24;
 }
 
-/* Fault payloads are mostly 32-bit words, many of them zero (fault address
+/* Fault and trap payloads are mostly 32-bit words, many of them zero (fault address
  * registers, r12, padding on the stack). They go out as a word count, a
  * bitmap of the non-zero words, and those words. Everything else is raw. */
 static void x_payload(struct xo *x, uint32_t type, uint32_t pos, uint32_t len)
 {
     uint32_t p = pos + HDR_LEN;
-    if (type == LW_T_FAULT && len % 4 == 0 && len > 0) {
+    uint32_t words = type == LW_T_FAULT || type == LW_T_TRAP;
+    if (words && len % 4 == 0 && len > 0) {
         uint32_t nw = len / 4, nz = 0;
         for (uint32_t i = 0; i < nw; i++)
             nz += ring_le32(p + 4 * i) != 0;
@@ -545,8 +581,8 @@ static void x_payload(struct xo *x, uint32_t type, uint32_t pos, uint32_t len)
         }
         return;
     }
-    x_var(x, len + (type == LW_T_FAULT));
-    if (type == LW_T_FAULT)
+    x_var(x, len + words);
+    if (words)
         x_byte(x, 0); /* unpacked */
     for (uint32_t i = 0; i < len; i++)
         x_byte(x, rd(p + i));
@@ -737,6 +773,68 @@ static void print_fault(struct line *l, const struct lw_entry *e)
     }
 }
 
+#ifndef LW_NO_FAULT_NAMES
+static const char *const trap_names[] = {
+    "instruction misaligned", "instruction access fault", "illegal instruction", "breakpoint",
+    "load misaligned", "load access fault", "store misaligned", "store access fault",
+    "ecall from U", "ecall from S", NULL, "ecall from M",
+    "instruction page fault", "load page fault", NULL, "store page fault",
+};
+#endif
+
+static void print_trap(struct line *l, const struct lw_entry *e)
+{
+    struct lw_trap_info t;
+    memset(&t, 0, sizeof t);
+    memcpy(&t, e->data, e->len < sizeof t ? e->len : sizeof t);
+    if (t.nstack > LW_FAULT_STACK_WORDS)
+        t.nstack = LW_FAULT_STACK_WORDS;
+
+    l_str(l, "!! trap");
+    if (t.mcause >> 31) {
+        l_str(l, " interrupt ");
+        l_dec(l, t.mcause & 0x7fffffffu, 0);
+    }
+#ifndef LW_NO_FAULT_NAMES
+    else if (t.mcause < sizeof trap_names / sizeof trap_names[0] && trap_names[t.mcause]) {
+        l_ch(l, ' ');
+        l_str(l, trap_names[t.mcause]);
+    }
+#endif
+    else {
+        l_str(l, " cause ");
+        l_dec(l, t.mcause, 0);
+    }
+    l_flush(l);
+    l_str(l, "  ");
+    l_kv(l, "sig", lw_signature(e));
+    l_flush(l);
+    l_str(l, "  ");
+    l_kv(l, "mepc", t.mepc);
+    l_kv(l, "ra", t.ra);
+    l_kv(l, "sp", t.sp);
+    l_kv(l, "mtval", t.mtval);
+    l_flush(l);
+    l_str(l, "  ");
+    l_kv(l, "mcause", t.mcause);
+    l_kv(l, "mstatus", t.mstatus);
+    l_flush(l);
+    l_str(l, "  ");
+    l_kv(l, "a0", t.a0);
+    l_kv(l, "a1", t.a1);
+    l_kv(l, "a2", t.a2);
+    l_kv(l, "a3", t.a3);
+    l_flush(l);
+    for (uint32_t i = 0; i < t.nstack; i++) {
+        if (i % 4 == 0)
+            l_str(l, i == 0 ? "   stack:" : "         ");
+        l_ch(l, ' ');
+        l_hex(l, t.stack[i]);
+        if (i % 4 == 3 || i + 1 == t.nstack)
+            l_flush(l);
+    }
+}
+
 static int print_one(const struct lw_entry *e, void *ctx)
 {
     static const char lv[] = "DIWEF";
@@ -765,6 +863,9 @@ static int print_one(const struct lw_entry *e, void *ctx)
         break;
     case LW_T_FAULT:
         print_fault(l, e);
+        break;
+    case LW_T_TRAP:
+        print_trap(l, e);
         break;
     case LW_T_PANIC:
         l_str(l, "!! panic");
@@ -828,7 +929,7 @@ void lw_reboot(void)
     }
 }
 
-#if LW_CORTEX_M
+#if LW_CORTEX_M || LW_RISCV
 
 /* Linker symbols that mark the top of the main stack in the common GCC
  * startup files. Weak, so whichever exists bounds the stack copy and the
@@ -848,6 +949,89 @@ static uint32_t stack_limit(void)
     return 0;
 #endif
 }
+#endif
+
+#if LW_RISCV
+
+#ifndef LW_TRAP_STACK
+#define LW_TRAP_STACK 512
+#endif
+#define LW_STR_(x) #x
+#define LW_STR(x) LW_STR_(x)
+
+/* The trap may come from a blown stack, so the handler runs on its own. */
+static uint32_t lw_trap_stack[LW_TRAP_STACK / 4] __attribute__((used, aligned(16)));
+
+void lw_trap_capture(const uint32_t saved[6])
+{
+    struct lw_trap_info t;
+
+    if (lw_in_fault)
+        lw_reboot(); /* trapped while recording a trap */
+    lw_in_fault = 1;
+
+    memset(&t, 0, sizeof t);
+    __asm volatile("csrr %0, mcause" : "=r"(t.mcause));
+    __asm volatile("csrr %0, mepc" : "=r"(t.mepc));
+    __asm volatile("csrr %0, mtval" : "=r"(t.mtval));
+    __asm volatile("csrr %0, mstatus" : "=r"(t.mstatus));
+    t.ra = saved[0];
+    t.a0 = saved[1];
+    t.a1 = saved[2];
+    t.a2 = saved[3];
+    t.a3 = saved[4];
+    t.sp = saved[5];
+
+    if ((t.sp & 3u) == 0) {
+        const uint32_t *sp = (const uint32_t *)(uintptr_t)t.sp;
+        uint32_t limit = stack_limit();
+        uint32_t n = 0;
+        while (n < LW_FAULT_STACK_WORDS && (limit == 0 || (uintptr_t)(sp + n) < limit)) {
+            t.stack[n] = sp[n];
+            n++;
+        }
+        t.nstack = n;
+    }
+
+    size_t len = sizeof t - (LW_FAULT_STACK_WORDS - t.nstack) * sizeof(uint32_t);
+    record_crash(LW_T_TRAP, &t, len, NULL, 0);
+    lw_reboot();
+}
+
+/* sp goes to mscratch so no register is touched before it is saved. la is
+ * kept from being relaxed against gp, which the crashing code may have
+ * clobbered. */
+__asm(".section .text.lw_trap_entry,\"ax\",@progbits\n"
+      ".globl lw_trap_entry\n"
+      ".type lw_trap_entry, @function\n"
+      ".balign 4\n"
+      "lw_trap_entry:\n"
+      "  csrw mscratch, sp\n"
+      "  .option push\n"
+      "  .option norelax\n"
+      "  la sp, lw_trap_stack + " LW_STR(LW_TRAP_STACK) "\n"
+      "  .option pop\n"
+      "  addi sp, sp, -32\n"
+      "  sw ra, 0(sp)\n"
+      "  sw a0, 4(sp)\n"
+      "  sw a1, 8(sp)\n"
+      "  sw a2, 12(sp)\n"
+      "  sw a3, 16(sp)\n"
+      "  csrr a0, mscratch\n"
+      "  sw a0, 20(sp)\n"
+      "  mv a0, sp\n"
+      "  tail lw_trap_capture\n"
+      ".size lw_trap_entry, . - lw_trap_entry\n"
+      ".text\n");
+
+void lw_trap_install(void)
+{
+    __asm volatile("csrw mtvec, %0" ::"r"((uintptr_t)lw_trap_entry) : "memory");
+}
+
+#endif /* LW_RISCV */
+
+#if LW_CORTEX_M
 
 void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
 {

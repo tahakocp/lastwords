@@ -16,7 +16,7 @@ import struct
 import sys
 
 MAGIC = b"LWX1"
-T_TEXT, T_BOOT, T_FAULT, T_PANIC, T_BLOB, T_REPEAT = range(6)
+T_TEXT, T_BOOT, T_FAULT, T_PANIC, T_BLOB, T_REPEAT, T_TRAP = range(7)
 STACK_WORDS = 16
 BEGIN, END = "---- export ----", "---- end export ----"
 
@@ -25,6 +25,10 @@ CFSR_NAMES = [(0, "IACCVIOL"), (1, "DACCVIOL"), (3, "MUNSTKERR"), (4, "MSTKERR")
               (13, "LSPERR"), (16, "UNDEFINSTR"), (17, "INVSTATE"), (18, "INVPC"), (19, "NOCP"),
               (20, "STKOF"), (24, "UNALIGNED"), (25, "DIVBYZERO")]
 EXC = {3: "HardFault", 4: "MemManage", 5: "BusFault", 6: "UsageFault", 7: "SecureFault"}
+TRAP_NAMES = ["instruction misaligned", "instruction access fault", "illegal instruction", "breakpoint",
+              "load misaligned", "load access fault", "store misaligned", "store access fault",
+              "ecall from U", "ecall from S", None, "ecall from M",
+              "instruction page fault", "load page fault", None, "store page fault"]
 
 
 class DecodeError(Exception):
@@ -59,6 +63,8 @@ def signature(rtype, data):
     if rtype == T_FAULT and len(data) >= 52:
         h = fnv_words([rtype, le32(data, 40), le32(data, 44), le32(data, 48) & 0x40000002,
                        le32(data, 20) & ~1 & 0xFFFFFFFF, le32(data, 24) & ~1 & 0xFFFFFFFF])
+    elif rtype == T_TRAP and len(data) >= 20:
+        h = fnv_words([rtype, le32(data, 0), le32(data, 16) & ~1 & 0xFFFFFFFF, le32(data, 4) & ~1 & 0xFFFFFFFF])
     elif rtype == T_PANIC and len(data) >= 4:
         h = fnv_words([rtype, le32(data) & ~1 & 0xFFFFFFFF])
     else:
@@ -111,11 +117,11 @@ def decode(buf):
         t = (t + ((z >> 1) ^ -(z & 1))) & 0xFFFFFFFF
         payload = Reader(r.take(r.var()))
         rtype = tl >> 4
-        if rtype == T_FAULT and (nw := payload.byte()):
+        if rtype in (T_FAULT, T_TRAP) and (nw := payload.byte()):
             bitmap = payload.take((nw + 7) // 8)
             words = [le32(payload.take(4)) if bitmap[i // 8] >> (i % 8) & 1 else 0 for i in range(nw)]
             data = struct.pack(f"<{nw}I", *words)
-        else:  # for faults, the 0 "unpacked" marker was read by the test above
+        else:  # for faults and traps, the 0 "unpacked" marker was read by the test above
             data = payload.take(len(payload.b) - payload.i)
         if payload.i != len(payload.b):
             raise DecodeError("payload length mismatch")
@@ -150,6 +156,23 @@ class Line:
 
     def kv(self, k, v):
         self.s(f" {k}=0x{v & 0xFFFFFFFF:08x}")
+
+
+def trap_name(mcause):
+    if mcause >> 31:
+        return f"interrupt {mcause & 0x7FFFFFFF}"
+    if mcause < len(TRAP_NAMES) and TRAP_NAMES[mcause]:
+        return TRAP_NAMES[mcause]
+    return f"cause {mcause}"
+
+
+def print_stack(l, stack):
+    for i, v in enumerate(stack):
+        if i % 4 == 0:
+            l.s("   stack:" if i == 0 else "         ")
+        l.s(f" 0x{v:08x}")
+        if i % 4 == 3 or i + 1 == len(stack):
+            l.flush()
 
 
 def print_entry(e, l):
@@ -198,13 +221,23 @@ def print_entry(e, l):
             if cfsr >> 15 & 1:
                 l.kv("bfar", bfar)
             l.flush()
-        stack = w[16:16 + min(nstack, STACK_WORDS)]
-        for i, v in enumerate(stack):
-            if i % 4 == 0:
-                l.s("   stack:" if i == 0 else "         ")
-            l.s(f" 0x{v:08x}")
-            if i % 4 == 3 or i + 1 == len(stack):
-                l.flush()
+        print_stack(l, w[16:16 + min(nstack, STACK_WORDS)])
+    elif rtype == T_TRAP:
+        w = list(struct.unpack_from(f"<{min(len(d), 108) // 4}I", d)) + [0] * 27
+        mcause, mepc, mtval, mstatus, ra, sp, a0, a1, a2, a3, nstack = w[:11]
+        l.s("!! trap " + trap_name(mcause))
+        l.flush()
+        l.s("  ")
+        l.kv("sig", signature(rtype, d))
+        l.flush()
+        for regs in ((("mepc", mepc), ("ra", ra), ("sp", sp), ("mtval", mtval)),
+                     (("mcause", mcause), ("mstatus", mstatus)),
+                     (("a0", a0), ("a1", a1), ("a2", a2), ("a3", a3))):
+            l.s("  ")
+            for k, v in regs:
+                l.kv(k, v)
+            l.flush()
+        print_stack(l, w[11:11 + min(nstack, STACK_WORDS)])
     elif rtype == T_PANIC:
         l.s("!! panic")
         if len(d) >= 4:
@@ -263,6 +296,12 @@ def crash_summary(entries):
             if not le32(d, 28) >> 24 & 1 or le32(d, 44) & 0x60101:
                 pc = 0
             full[sig] = (EXC.get(le32(d, 40), "exception"), pc, le32(d, 20))
+            yield sig, full[sig], 1
+        elif rtype == T_TRAP and sig:
+            pc = le32(d, 4)
+            if le32(d, 0) in (0, 1):  # mepc is the bad jump target
+                pc = 0
+            full[sig] = ("trap " + trap_name(le32(d, 0)), pc, le32(d, 16))
             yield sig, full[sig], 1
         elif rtype == T_PANIC and sig:
             full[sig] = ("panic " + d[4:].decode("utf-8", "replace"), le32(d), None)

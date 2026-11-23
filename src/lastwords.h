@@ -40,7 +40,8 @@ enum lw_type {
     LW_T_FAULT = 2, /* payload: struct lw_fault_info */
     LW_T_PANIC = 3, /* payload: struct lw_panic_info + message */
     LW_T_BLOB = 4,  /* payload: application bytes */
-    LW_T_REPEAT = 5 /* payload: struct lw_repeat_info; a crash whose full record is still in the ring */
+    LW_T_REPEAT = 5, /* payload: struct lw_repeat_info; a crash whose full record is still in the ring */
+    LW_T_TRAP = 6    /* payload: struct lw_trap_info (RISC-V machine-mode exception) */
 };
 
 /* What lw_init() found in RAM. */
@@ -63,6 +64,16 @@ struct lw_fault_info {
     uint32_t sp;   /* stack pointer before the exception frame was pushed */
     uint32_t ipsr; /* exception number: 3 HardFault, 4 MemManage, 5 BusFault, 6 UsageFault, 7 SecureFault */
     uint32_t cfsr, hfsr, mmfar, bfar;
+    uint32_t nstack;
+    uint32_t stack[LW_FAULT_STACK_WORDS];
+};
+
+/* RISC-V: the trap CSRs and the registers that point back at the caller.
+ * sp and the stack slice are those of the code that trapped. */
+struct lw_trap_info {
+    uint32_t mcause, mepc, mtval, mstatus;
+    uint32_t ra, sp;
+    uint32_t a0, a1, a2, a3;
     uint32_t nstack;
     uint32_t stack[LW_FAULT_STACK_WORDS];
 };
@@ -131,9 +142,10 @@ void lw_print(lw_out_fn out, void *ctx);
 
 void lw_get_stats(struct lw_stats *st);
 
-/* Crash signature of a FAULT, PANIC or REPEAT record, 0 for anything else.
- * FNV-1a over the record type, exception number, CFSR, HFSR.FORCED/VECTTBL,
- * pc and lr (panic: the caller address). Registers, sp and the stack slice
+/* Crash signature of a FAULT, TRAP, PANIC or REPEAT record, 0 for anything
+ * else. FNV-1a over the record type, exception number, CFSR,
+ * HFSR.FORCED/VECTTBL, pc and lr (RISC-V: mcause, mepc and ra; panic: the
+ * caller address). Registers, sp and the stack slice
  * are left out, so the same bug hits the same signature on every device
  * running the same build. tools/lwdecode.py computes the same value. */
 uint32_t lw_signature(const struct lw_entry *e);
@@ -168,6 +180,22 @@ void lw_fault_entry(void);
 /* Cortex-M only: C half of the fault handler. Exposed for RTOS ports that
  * install their own HardFault entry. */
 void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
+#if defined(__GNUC__)
+    __attribute__((noreturn))
+#endif
+    ;
+
+/* RISC-V only: machine-mode trap entry. Point mtvec at it (direct mode), or
+ * jump to it from slot 0 of a vectored table so interrupts keep their own
+ * handlers. It switches to a private stack of LW_TRAP_STACK bytes, records a
+ * TRAP and calls lw_reboot(). In direct mode an interrupt also lands here
+ * and is recorded as a crash, so only use direct mode without interrupts. */
+void lw_trap_entry(void);
+void lw_trap_install(void);
+
+/* RISC-V only: C half of the trap entry, for ports with their own mtvec
+ * handler. saved holds ra, a0, a1, a2, a3 and sp as they were at the trap. */
+void lw_trap_capture(const uint32_t saved[6])
 #if defined(__GNUC__)
     __attribute__((noreturn))
 #endif

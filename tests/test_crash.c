@@ -22,6 +22,7 @@ static int failures, checks;
 
 void lw_test_store(void) {}
 void lw_test_fault(const struct lw_fault_info *f, size_t len);
+void lw_test_trap(const struct lw_trap_info *t, size_t len);
 
 static jmp_buf reboot_jb;
 void lw_reboot(void)
@@ -71,6 +72,30 @@ static struct lw_fault_info make_fault(uint32_t pc, uint32_t lr, uint32_t cfsr)
     for (uint32_t i = 0; i < f.nstack; i++)
         f.stack[i] = rnd() % 3 == 0 ? 0 : (rnd() % 2 ? 0x20003f00u + (rnd() & 0xfc) : (rnd() & 0x3ffe) | 1);
     return f;
+}
+
+static struct lw_trap_info make_trap(uint32_t mcause, uint32_t mepc, uint32_t ra)
+{
+    struct lw_trap_info t;
+    memset(&t, 0, sizeof t);
+    t.mcause = mcause;
+    t.mepc = mepc;
+    t.ra = ra;
+    t.mtval = mcause == 2 ? 0 : 0x30000000u + (rnd() & 0xfc);
+    t.mstatus = 0x1880u;
+    t.sp = 0x80003fc0u - (rnd() & 0x3c);
+    t.a0 = rnd();
+    t.a1 = rnd() & 0xff;
+    t.nstack = LW_FAULT_STACK_WORDS;
+    for (uint32_t i = 0; i < t.nstack; i++)
+        t.stack[i] = rnd() % 3 == 0 ? 0 : 0x80000000u + (rnd() & 0x3ffe);
+    return t;
+}
+
+static void trap_len(const struct lw_trap_info *t, size_t len)
+{
+    if (!setjmp(reboot_jb))
+        lw_test_trap(t, len);
 }
 
 static void crash_len(const struct lw_fault_info *f, size_t len)
@@ -124,6 +149,22 @@ static void test_signature(void)
 
     eb.type = LW_T_TEXT;
     CHECK(lw_signature(&eb) == 0);
+
+    /* RISC-V traps: mtval, a0-a3 and the stack do not count, cause does. */
+    struct lw_trap_info ta = make_trap(5, 0x80000124u, 0x80000210u);
+    struct lw_trap_info tb = make_trap(5, 0x80000124u, 0x80000210u);
+    tb.mtval ^= 0x40;
+    memset(&ea, 0, sizeof ea);
+    memset(&eb, 0, sizeof eb);
+    ea.type = eb.type = LW_T_TRAP;
+    ea.len = eb.len = sizeof ta;
+    memcpy(ea.data, &ta, sizeof ta);
+    memcpy(eb.data, &tb, sizeof tb);
+    CHECK(lw_signature(&ea) != 0);
+    CHECK(lw_signature(&ea) == lw_signature(&eb));
+    tb.mcause = 7;
+    memcpy(eb.data, &tb, sizeof tb);
+    CHECK(lw_signature(&ea) != lw_signature(&eb));
 }
 
 /* A crash loop: same fault every boot. Returns how many boots the log
@@ -184,6 +225,20 @@ static void test_repeat(void)
     CHECK(c[LW_T_FAULT] == 2);
     CHECK(c[LW_T_PANIC] == 1);
     CHECK(c[LW_T_REPEAT] == 3);
+
+    /* Same for RISC-V traps. */
+    wipe();
+    lw_init(0);
+    struct lw_trap_info t = make_trap(2, 0x80000124u, 0x80000210u);
+    for (int i = 0; i < 3; i++) {
+        t.a0 = rnd();
+        trap_len(&t, sizeof t);
+        CHECK(lw_init(0) == LW_START_CRASHED);
+    }
+    memset(c, 0, sizeof c);
+    lw_foreach(count_type, c);
+    CHECK(c[LW_T_TRAP] == 1);
+    CHECK(c[LW_T_REPEAT] == 2);
 #endif
 }
 
@@ -252,6 +307,21 @@ static void test_export(void)
     dump("demo", &x);
     printf("demo-shaped ring: %u bytes of records, export %u bytes\n", used_bytes(), x);
 
+    /* The RISC-V demo shape: traps instead of Cortex-M faults. */
+    wipe();
+    for (int boot = 0; boot < 5; boot++) {
+        lw_init(0);
+        lw_logf(LW_INFO, "boot %d, sensor sample %d", boot, boot * 17);
+        static const uint32_t causes[] = {7, 2, 5, 1, 7};
+        struct lw_trap_info t = make_trap(causes[boot], boot == 4 ? 0x80000124u : 0x80000124u + 0x20 * (uint32_t)boot,
+                                          causes[boot] == 1 ? 0x80000302u : 0x80000210u);
+        t.nstack = (uint32_t)boot * 4;
+        trap_len(&t, sizeof t - (LW_FAULT_STACK_WORDS - t.nstack) * 4);
+    }
+    lw_init(0);
+    dump("riscv", &x);
+    printf("riscv-shaped ring: %u bytes of records, export %u bytes\n", used_bytes(), x);
+
     /* A full ring of random lines, levels, blobs, crashes and clock jumps. */
     for (int round = 0; round < 50; round++) {
         wipe();
@@ -263,6 +333,11 @@ static void test_export(void)
                 struct lw_fault_info f = make_fault(rnd() & 0xfffe, rnd() | 1, rnd() & 0x030f8200u);
                 f.nstack = rnd() % (LW_FAULT_STACK_WORDS + 1);
                 crash_len(&f, sizeof f - (LW_FAULT_STACK_WORDS - f.nstack) * 4);
+                lw_init(rnd());
+            } else if (r == 3) {
+                struct lw_trap_info t = make_trap(rnd() % 3 ? rnd() % 16 : rnd(), rnd() & 0xfffe, rnd());
+                t.nstack = rnd() % (LW_FAULT_STACK_WORDS + 1);
+                trap_len(&t, sizeof t - (LW_FAULT_STACK_WORDS - t.nstack) * 4);
                 lw_init(rnd());
             } else if (r == 1) {
                 panic(rnd() % 2 ? "assert len < 64" : "oom");
