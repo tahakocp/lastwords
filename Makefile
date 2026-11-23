@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu riscv size footprint count cross clean
+.PHONY: test test-asan qemu riscv armv8m size footprint count cross clean
 
 CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
@@ -35,6 +35,10 @@ riscv:
 	$(MAKE) -C examples/riscv run
 	@$(MAKE) -s -C examples/riscv footprint count
 
+# TrustZone Cortex-M55 on QEMU mps3-an547, Secure image with a Non-secure call.
+armv8m:
+	$(MAKE) -C examples/armv8m run
+
 # Compile-only check for cores QEMU's free machines do not cover.
 cross:
 	@for c in $(CROSS_CPUS); do \
@@ -52,3 +56,4 @@ clean:
 	rm -rf $(BUILD)
 	$(MAKE) -C examples/qemu clean
 	$(MAKE) -C examples/riscv clean
+	$(MAKE) -C examples/armv8m clean

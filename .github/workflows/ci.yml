@@ -45,6 +45,24 @@ jobs:
           name: qemu-transcripts
           path: examples/qemu/build/run-*.txt
 
+  armv8m:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install arm-none-eabi-gcc and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi binutils-arm-none-eabi qemu-system-arm
+          arm-none-eabi-gcc --version | head -1
+          qemu-system-arm --version | head -1
+      - name: five boots on a TrustZone Cortex-M55 (mps3-an547)
+        run: make armv8m
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: armv8m-transcript
+          path: examples/armv8m/build/run-m55.txt
+
   riscv:
     runs-on: ubuntu-latest
     env:
