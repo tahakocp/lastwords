@@ -17,6 +17,8 @@ New in 0.2: every crash gets a signature, a crash that is already in the ring is
 
 New in 0.3: RV32 machine-mode trap capture. `lw_trap_entry` goes in `mtvec`, a trap is stored with `mcause`, `mepc`, `mtval`, `ra`, `sp` and a stack slice, and everything above (signatures, repeats, export, decoder, `lwsym.py`) handles it. Tested on QEMU `virt` only, see [RISC-V](#risc-v).
 
+New in 0.4: TrustZone on ARMv8-M. A Secure fault handler reads the frame from `MSP_NS`/`PSP_NS` when the fault came from Non-secure code, skips the extra state context when it is there, and stores SFSR/SFAR with every SecureFault. Tested on a Cortex-M55 in QEMU `mps3-an547` only, see [TrustZone](#trustzone-armv8-m).
+
 This is what the last boot of the [QEMU demo](examples/qemu) prints about boot 0, after `tools/lwsym.py` added the source lines:
 
 ```text
@@ -44,7 +46,7 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,752 bytes with GCC 15.2, 1,832 with Ubuntu's GCC 14.2 in CI (1,216 with GCC 15.2 and `LW_NO_DEDUP`) |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,764 bytes with GCC 15.2, 1,844 with Ubuntu's GCC 14.2 in CI (1,216 with GCC 15.2 and `LW_NO_DEDUP`). Cortex-M33: 1,888, Cortex-M55: 1,904 (GCC 15.2, TrustZone handling included) |
 | Whole object incl. `lw_print`, `lw_export` and the fault-bit names | 4.8 KB (4.3 KB with `LW_NO_FAULT_NAMES`; the RISC-V trap printer is not compiled for Cortex-M); `lw_export` is 0.7 KB of that and is dropped by `--gc-sections` if unused |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions with GCC 15.2, 1,298 with 14.2 (QEMU instruction count; real cycles depend on flash wait states) |
@@ -225,6 +227,57 @@ The other boots: a store through a pointer to unmapped memory (store access faul
 
 QEMU only. I have not run this on RISC-V silicon. What QEMU does not tell you about your chip: whether its boot ROM or reset logic clears SRAM, what reset register to use in `lw_reboot()`, and whether your SDK's startup already owns `mtvec` and `mscratch`.
 
+## TrustZone (ARMv8-M)
+
+On a core with the Security Extension the fault handlers usually run Secure, while the code that crashes may be Non-secure. `lw_fault_entry` reads EXC_RETURN and picks the stack the core actually used:
+
+| EXC_RETURN | meaning | what lastwords does |
+|---|---|---|
+| ES=1, S=0 | Secure handler, Non-secure code faulted | frame from `MSP_NS` or `PSP_NS` (SPSEL), NS CFSR bank merged in, printed as `in non-secure code` |
+| ES=1, S=1 | Secure handler, Secure code faulted | frame from `MSP`/`PSP` as before |
+| DCRS=0 | r4-r11 and the integrity signature were stacked first | skipped (10 words) after checking the signature `0xFEFA125A/B` |
+| FType=0, S=1, `FPCCR.TS` | s16-s31 were stacked too | sp skips the extra 16 words |
+| ES=0 | handler is Non-secure (or no TrustZone) | as on ARMv7-M; SFSR is not read |
+
+When the handler runs Secure and SFSR is non-zero, SFSR and SFAR go into the record after the stack words, and `lw_print`/`lwdecode.py` name the bits (`INVEP`, `INVIS`, `INVER`, `AUVIOL`, `INVTRAN`, `LSPERR`, `LSERR`). Records without them are unchanged, so 0.3 exports still decode. The signature does not cover SFSR; the exception number already tells a SecureFault apart.
+
+[examples/armv8m](examples/armv8m) is a Secure image for QEMU's `mps3-an547` (Cortex-M55). It opens two SAU regions and enables SecureFault. Boot 0 calls into Non-secure memory with a plain `BLX`, which the core refuses:
+
+```text
+[       0] #    2 I calling plugin
+[       0] #    3 !! SecureFault INVTRAN
+   sig=0xbd8c56f5
+   pc=0x000000a0 lr=0x1000017b sp=0x30003fd8 xpsr=0x21000000
+   pc -> not in this ELF (jump to a bad address?)
+   lr -> main  main.c:135
+   r0=0x000000a1 r1=0x0000006e r2=0xffffffb2 r3=0x30000052 r12=0x10002047
+   sfsr=0x00000010
+   stack: 0x30000030 0x00000000 0x00000001 0x00000013
+          0x00000000 0x00000000 0x00000000 0x10000263
+          0x00000000 0xffffffff
+   backtrace guess (return addresses found on the stack):
+     0x10000263  Reset_Handler  startup.c:11
+```
+
+Boot 1 enters Non-secure code properly with `BLXNS`, and that code hits an undefined instruction. The Non-secure UsageFault is not enabled, so it escalates to the Secure HardFault, which finds the frame on the Non-secure main stack (`sp` is the top of the `MSP_NS` area, `lr` is the FNC_RETURN value):
+
+```text
+[       0] #    7 !! HardFault UNDEFINSTR FORCED in non-secure code
+   sig=0xfcf5586b
+   pc=0x000000a0 lr=0xfeffffff sp=0x20010000 xpsr=0x21000000
+   pc -> not in this ELF (jump to a bad address?)
+   r0=0x000000a0 r1=0x00000065 r2=0xfffffee0 r3=0x20010000 r12=0x10002047
+   cfsr=0x00010000 hfsr=0x40000000
+   stack: 0x00000000 0x00000000 0x00000000 0x00000000
+          0x00000000 0x00000000 0x00000000 0x00000000
+          0x00000000 0x00000000 0x00000000 0x00000000
+          0x00000000 0x00000000 0x00000000 0x00000000
+```
+
+`pc` is the Non-secure alias of the function (`0x100000a0` in the Secure image). In a real system the Non-secure side is a separate ELF; point `lwsym.py` at that one for these records.
+
+QEMU only. Not tested: a fault from a Non-secure thread on `PSP_NS`, the DCRS=0 and `FPCCR.TS` paths (QEMU did not produce them in this demo; the code follows the Armv8-M ARM), Non-secure handlers with `AIRCR.BFHFNMINS=1`, and any real M33/M55 silicon.
+
 ## Compared with
 
 | | what it keeps across reset | size / scope | license |
@@ -247,6 +300,7 @@ make test-asan    # same under AddressSanitizer + UBSan
 make qemu         # needs arm-none-eabi-gcc and qemu-system-arm
 make cross        # compile-only for M0+, M23, M33, M55 and friends
 make riscv        # needs riscv-none-elf-gcc and qemu-system-riscv32 (xPack builds in CI)
+make armv8m       # TrustZone Cortex-M55 on qemu-system-arm mps3-an547
 make footprint    # flash cost on Cortex-M3
 make count        # instructions per lw_log(), from a QEMU execution trace
 ./build/test_1024 1000000   # the random-ring trial from the table
@@ -263,6 +317,7 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 - ARMv6-M (M0/M0+) and ARMv8-M Baseline (M23) have no fault status registers, so the record has the frame and stack only. `lwsym.py` still flags a cleared Thumb bit in xPSR as a bad jump.
 - The backtrace is a heuristic: odd stack words that point right after a `BL`/`BLX`. Stale return addresses from earlier calls can show up, and frames whose return address lives in a callee-saved register will not.
 - RISC-V: RV32 machine mode only, no RV64, no S-mode/U-mode stacks, no PMP awareness. Tested on QEMU `virt` only. The trap stack is 512 bytes; the deepest path measured at `-Os` is about 370 bytes, so `-O0` builds may need `LW_TRAP_STACK=1024`. `mscratch` is overwritten on the way to a reset; if your RTOS keeps something there, call `lw_trap_capture()` from its handler instead.
+- TrustZone: the Secure side records everything; a Non-secure-only build cannot see SFSR or Secure state. Non-secure addresses in a Secure record are not symbolized against the Secure ELF.
 - Records are capped at 255 bytes; `lw_logf` truncates.
 - 16-bit sequence numbers and CRC, see the numbers table for what that costs.
 - Two different bugs with the same exception, fault bits, pc and lr share a signature. Signatures are per build: rebuild and the addresses move, which is what `--elf` grouping is for.

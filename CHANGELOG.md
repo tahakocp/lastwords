@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 (2026-11-23)
+
+- TrustZone-aware fault capture on ARMv8-M. `lw_fault_entry` takes the frame from `MSP_NS`/`PSP_NS` when a Secure handler catches a Non-secure fault (EXC_RETURN ES=1, S=0), and from `MSP`/`PSP` otherwise. Same Thumb-1 entry on M23.
+- Extra state context (DCRS=0) skipped after checking the integrity signature; s16-s31 accounted for when `FPCCR.TS` is set and Secure code was interrupted.
+- Secure handler with non-zero SFSR: SFSR and SFAR are appended to the FAULT record after the stack words. `lw_print` and `lwdecode.py` name the SFSR bits and print `sfsr=`/`sfar=`; records without them are byte-for-byte as in 0.3. Older decoders ignore the two extra words.
+- Non-secure fault escalated to the Secure HardFault: the Non-secure CFSR bank is merged in, so the record says `UNDEFINSTR` etc. instead of a bare `FORCED`. Printed as `in non-secure code`.
+- `examples/armv8m`: Secure image for QEMU `mps3-an547` (Cortex-M55), five boots: SecureFault INVTRAN, Non-secure UNDEFINSTR caught on `MSP_NS`, Secure BusFault, repeat, export check. New CI job.
+- Host tests: an ARMv8-M scenario and Secure-style records in the random rings; 54 exports decode byte-identical to `lw_print`, 10,800/10,800 single-bit flips rejected.
+- Flash (init + log + fault, `-Os`, `LW_NO_PRINTF`, GCC 15.2): M33 1,888 (was 1,748), M55 1,904 (was 1,760), M3 1,764 (was 1,752).
+- QEMU only. The DCRS=0 and `FPCCR.TS` paths and faults on `PSP_NS` were not exercised by the demo.
+
 ## 0.3.0 (2026-11-23)
 
 - RISC-V RV32 machine-mode trap capture: `lw_trap_entry` (for `mtvec`), `lw_trap_install()`, `lw_trap_capture()` for ports with their own handler. Runs on its own 512-byte stack (`LW_TRAP_STACK`).

@@ -1,6 +1,6 @@
 {
   "name": "lastwords",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Crash flight recorder for Cortex-M and RV32: the last log lines and the fault that killed your MCU, still in RAM after reset.",
   "keywords": ["hardfault", "crash", "logging", "cortex-m", "risc-v", "post-mortem", "noinit"],
   "repository": { "type": "git", "url": "https://github.com/tahakocp/lastwords.git" },
