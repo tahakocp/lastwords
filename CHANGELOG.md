@@ -8,6 +8,7 @@
 - `lwsym.py` reads RV32 ELFs: mepc/ra lookup, riscv addr2line, return-address check against `jal`/`jalr`/`c.jal`/`c.jalr`.
 - `examples/riscv`: QEMU `virt` demo, six boots, four different traps and a repeat, semihosting output, SiFive test device for reset. New CI job with xPack riscv-none-elf-gcc 14.2 and qemu-system-riscv32 9.2.
 - rv32imac: 2,128 bytes of flash for init + log + trap capture, about 1,560 instructions per `lw_log()`.
+- Cortex-M builds do not compile the trap code, printer or trap signature: +12 bytes over 0.2.0 in the M3 footprint (1,752 with GCC 15.2).
 - QEMU only, no RISC-V silicon tested.
 
 ## 0.2.0 (2026-11-22)
