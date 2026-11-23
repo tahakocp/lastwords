@@ -775,6 +775,8 @@ static void print_fault(struct line *l, const struct lw_entry *e)
     }
 }
 
+/* RISC-V traps. Cortex-M builds never write them and skip the 0.8 KB. */
+#if !LW_CORTEX_M
 #ifndef LW_NO_FAULT_NAMES
 static const char *const trap_names[] = {
     "instruction misaligned", "instruction access fault", "illegal instruction", "breakpoint",
@@ -836,6 +838,7 @@ static void print_trap(struct line *l, const struct lw_entry *e)
             l_flush(l);
     }
 }
+#endif
 
 static int print_one(const struct lw_entry *e, void *ctx)
 {
@@ -866,9 +869,11 @@ static int print_one(const struct lw_entry *e, void *ctx)
     case LW_T_FAULT:
         print_fault(l, e);
         break;
+#if !LW_CORTEX_M
     case LW_T_TRAP:
         print_trap(l, e);
         break;
+#endif
     case LW_T_PANIC:
         l_str(l, "!! panic");
         if (e->len >= 4)
