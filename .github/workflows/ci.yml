@@ -48,17 +48,17 @@ jobs:
   riscv:
     runs-on: ubuntu-latest
     env:
-      GCC: 14.2.0-3
-      QEMU: 9.2.4-1
+      XPACK_GCC: 14.2.0-3
+      XPACK_QEMU: 9.2.4-1
     steps:
       - uses: actions/checkout@v4
       - name: install xPack riscv-none-elf-gcc and qemu-system-riscv32
         run: |
           mkdir -p ~/xpack && cd ~/xpack
-          curl -fsSL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v$GCC/xpack-riscv-none-elf-gcc-$GCC-linux-x64.tar.gz | tar xz
-          curl -fsSL https://github.com/xpack-dev-tools/qemu-riscv-xpack/releases/download/v$QEMU/xpack-qemu-riscv-$QEMU-linux-x64.tar.gz | tar xz
-          echo "$HOME/xpack/xpack-riscv-none-elf-gcc-$GCC/bin" >> $GITHUB_PATH
-          echo "$HOME/xpack/xpack-qemu-riscv-$QEMU/bin" >> $GITHUB_PATH
+          curl -fsSL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v$XPACK_GCC/xpack-riscv-none-elf-gcc-$XPACK_GCC-linux-x64.tar.gz | tar xz
+          curl -fsSL https://github.com/xpack-dev-tools/qemu-riscv-xpack/releases/download/v$XPACK_QEMU/xpack-qemu-riscv-$XPACK_QEMU-linux-x64.tar.gz | tar xz
+          echo "$HOME/xpack/xpack-riscv-none-elf-gcc-$XPACK_GCC/bin" >> $GITHUB_PATH
+          echo "$HOME/xpack/xpack-qemu-riscv-$XPACK_QEMU/bin" >> $GITHUB_PATH
       - name: compile for rv32imac and rv32imc
         run: |
           riscv-none-elf-gcc --version | head -1
