@@ -9,11 +9,13 @@
 
 <sub>Real run of `make run-m3` in [examples/qemu](examples/qemu), recorded with v0.1.0 (cast file: [docs/demo.cast](docs/demo.cast)). Boot 0 crashed; a later boot printed what boot 0 was doing when it died.</sub>
 
-lastwords is a crash flight recorder for Cortex-M in two C files. Your log calls go into a small ring buffer in a RAM section the startup code never zeroes. When the chip faults, the handler appends the registers and a slice of the stack to the same ring and resets. On the next boot `lw_init()` validates what is left, tells you the previous run crashed, and you print or upload it whenever it suits you.
+lastwords is a crash flight recorder for Cortex-M and 32-bit RISC-V in two C files. Your log calls go into a small ring buffer in a RAM section the startup code never zeroes. When the chip faults, the handler appends the registers and a slice of the stack to the same ring and resets. On the next boot `lw_init()` validates what is left, tells you the previous run crashed, and you print or upload it whenever it suits you.
 
 No flash writes inside the fault handler, no heap, no vendor HAL, no cloud. It works for the device on your desk and for the one in a field that only gets a UART once a month.
 
 New in 0.2: every crash gets a signature, a crash that is already in the ring is stored as a 17-byte repeat record instead of a second full dump (so a crash loop does not wipe the log that led to it), and `lw_export()` streams the ring in a compact format that `tools/lwdecode.py` turns back into the exact `lw_print()` text, or into a table of distinct crashes across many devices.
+
+New in 0.3: RV32 machine-mode trap capture. `lw_trap_entry` goes in `mtvec`, a trap is stored with `mcause`, `mepc`, `mtval`, `ra`, `sp` and a stack slice, and everything above (signatures, repeats, export, decoder, `lwsym.py`) handles it. Tested on QEMU `virt` only, see [RISC-V](#risc-v).
 
 This is what the last boot of the [QEMU demo](examples/qemu) prints about boot 0, after `tools/lwsym.py` added the source lines:
 
@@ -42,8 +44,8 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,740 bytes with GCC 15.2, 1,824 with Ubuntu's GCC 14.2 in CI (1,212 with GCC 15.2 and `LW_NO_DEDUP`) |
-| Whole object incl. `lw_print`, `lw_export` and the fault-bit names | 4.7 KB (4.3 KB with `LW_NO_FAULT_NAMES`); `lw_export` is 0.7 KB of that and is dropped by `--gc-sections` if unused |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,752 bytes with GCC 15.2, 1,832 with Ubuntu's GCC 14.2 in CI (1,216 with GCC 15.2 and `LW_NO_DEDUP`) |
+| Whole object incl. `lw_print`, `lw_export` and the fault-bit names | 4.8 KB (4.3 KB with `LW_NO_FAULT_NAMES`; the RISC-V trap printer is not compiled for Cortex-M); `lw_export` is 0.7 KB of that and is dropped by `--gc-sections` if unused |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions with GCC 15.2, 1,298 with 14.2 (QEMU instruction count; real cycles depend on flash wait states) |
 | Record overhead | 11 bytes (8 header, CRC-16, trailing length) |
@@ -53,7 +55,11 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 | Crash scenarios run in QEMU on Cortex-M0, M3, M4, M7 | 4 of 4 recovered and pinned to the right source line on every core; the fifth crash, a repeat of the first, stored as a repeat record and traced back to it |
 | Crash loop on a 1 KB ring (same fault every boot, one log line per boot) | the log from before the first crash survives 11 boots, 4 with `LW_NO_DEDUP` |
 | Export size, QEMU demo ring (34 records, 1,291 bytes of records) | 963 bytes on M3, 917 on M0 with GCC 15.2 (25-30% smaller); no buffer needed, it streams |
-| Exports decoded by `lwdecode.py` | 52 host scenarios and 4 QEMU runs, all byte-identical to `lw_print`; 10,400 of 10,400 single-bit flips rejected by the CRC |
+| Exports decoded by `lwdecode.py` | 53 host scenarios (traps included) and 5 QEMU runs (4 Cortex-M, 1 RV32), all byte-identical to `lw_print`; 10,600 of 10,600 single-bit flips rejected by the CRC |
+| Flash added to a minimal rv32imac image, `-Os`, `LW_NO_PRINTF`: init, log, trap entry and capture with repeat detection | 2,128 bytes with xPack GCC 14.2 |
+| RAM on RV32 | ring size + 24 bytes header (`.noinit`) + 512 bytes trap stack (`LW_TRAP_STACK`) + 16 bytes `.bss` |
+| `lw_log()` of a 32-byte line, rv32imac | about 1,560 instructions (QEMU instruction count) |
+| Trap scenarios run in QEMU `virt` (rv32) | 4 of 4 recovered and pinned to the right source line, the repeat traced back to the first trap; export 941 bytes for 1,252 bytes of records |
 
 That one-in-a-million line is the price of a 16-bit CRC: if RAM decays just enough to keep the header but scramble the ring, roughly one boot in a million can show a line of noise. A cold power-on randomises the header too, and is caught by the magic and size check.
 
@@ -121,10 +127,11 @@ void lw_print(lw_out_fn out, void *ctx);          /* human-readable, one line pe
 void lw_get_stats(struct lw_stats *st);
 void lw_clear(void);
 const void *lw_region(size_t *size);              /* raw bytes, to copy to flash or ship */
-void lw_reboot(void);                             /* weak; default is AIRCR.SYSRESETREQ */
+void lw_reboot(void);                             /* weak; default is AIRCR.SYSRESETREQ, spins on RISC-V */
+void lw_trap_install(void);                       /* RISC-V: mtvec = lw_trap_entry */
 ```
 
-Compile-time options: `LW_RING_SIZE` (power of two, 256 to 65536, default 1024), `LW_FAULT_STACK_WORDS` (default 16), `LW_SECTION`, `LW_NO_PRINTF` (drops `lw_logf` and the vsnprintf dependency), `LW_NO_FAULT_NAMES`, `LW_NO_FAULT_HANDLERS`, `LW_NO_DEDUP` (always write full crash records), `LW_STACK_TOP`, and `LW_LOCK()`/`LW_UNLOCK()` if masking interrupts with PRIMASK is not what you want.
+Compile-time options: `LW_RING_SIZE` (power of two, 256 to 65536, default 1024), `LW_FAULT_STACK_WORDS` (default 16), `LW_SECTION`, `LW_NO_PRINTF` (drops `lw_logf` and the vsnprintf dependency), `LW_NO_FAULT_NAMES`, `LW_NO_FAULT_HANDLERS`, `LW_NO_DEDUP` (always write full crash records), `LW_STACK_TOP`, `LW_TRAP_STACK` (RISC-V, default 512), and `LW_LOCK()`/`LW_UNLOCK()` if masking interrupts with PRIMASK (RISC-V: `mstatus.MIE`) is not what you want.
 
 Logging is safe from interrupts: each record is written with interrupts masked. A 32-byte line is about 1,200 instructions, so tens of microseconds at common clock speeds. If that is too long for your fastest ISR, log less from it or supply your own lock.
 
@@ -161,7 +168,7 @@ per record:  [type<<4|level]  varint zigzag(time delta)  varint len  payload
 crc16 (CCITT-FALSE, little-endian) over everything before it
 ```
 
-Sequence numbers are implicit (the ring only keeps consecutive ones). Fault payloads go out as a word count, a bitmap of non-zero words and those words; text, panic and blob payloads are raw. On the host:
+Sequence numbers are implicit (the ring only keeps consecutive ones). Fault and trap payloads go out as a word count, a bitmap of non-zero words and those words; text, panic and blob payloads are raw. On the host:
 
 ```sh
 python3 tools/lwdecode.py dump.bin           # the same text lw_print() gives, then pipe into lwsym.py
@@ -180,6 +187,43 @@ count  devices  signature   crash
 That is the M3 QEMU run: the boot 0 crash and its boot 4 repeat are one row.
 
 `--crashes` counts each crash once per occurrence, repeat records included, and with `--elf` also merges signatures whose pc and lr resolve to the same functions, so a crash keeps its row when a rebuild moves the addresses. It is Python 3 only, no packages.
+
+## RISC-V
+
+RV32 in machine mode, bare metal. Install the entry once, before anything can trap:
+
+```c
+lw_init(0);
+lw_trap_install();          /* csrw mtvec, lw_trap_entry (direct mode) */
+```
+
+With a vectored `mtvec`, put `j lw_trap_entry` in slot 0 instead: exceptions go there and interrupts keep their own slots. In direct mode an interrupt would land in `lw_trap_entry` too and be recorded as a crash, so use direct mode only while interrupts are off, or call `lw_trap_capture()` from the exception branch of your own handler.
+
+The entry parks `sp` in `mscratch`, switches to its own 512-byte stack (the trap may be a stack overflow), saves `ra`, `a0`-`a3` and the old `sp`, and calls the C half. That reads `mcause`, `mepc`, `mtval` and `mstatus`, copies up to 16 words of the old stack (bounded by `__StackTop`/`_estack` or `LW_STACK_TOP`), writes a TRAP record, and calls `lw_reboot()`. There is no standard way to reset a RISC-V core, so the default `lw_reboot()` only spins: define your own that pokes your SoC's reset register or lets the watchdog bite. The demo writes `0x7777` to QEMU's SiFive test device.
+
+The signature covers `mcause`, `mepc` and `ra`, not `mtval`, which holds the data address on an access fault. Boot 3 of [examples/riscv](examples/riscv) calls a function pointer that points at nothing:
+
+```text
+[       3] #   22 I dispatching message 2
+[       3] #   23 !! trap instruction access fault
+   sig=0x53116f07
+   mepc=0x00200000 ra=0x800001fe sp=0x8000ffd0 mtval=0x00200000
+   mepc -> bad jump target (instruction access fault), the caller is at ra
+   ra -> main  main.c:152
+   mcause=0x00000001 mstatus=0x00001800
+   a0=0x00000081 a1=0x00000002 a2=0x80002354 a3=0x80002f17
+   stack: 0x00000033 0x00000003 0x00000013 0x000002d0
+          0x00000000 0x00000000 0x00000000 0x80002000
+          0x00000011 0x00000002 0x00000000 0x8000002a
+   backtrace guess (return addresses found on the stack):
+     0x8000002a  _start  start.S:18
+```
+
+`lwsym.py` sees from the ELF header that this is RISC-V, uses `riscv-none-elf-addr2line`, and accepts a stack word as a return address only if the instruction before it is a `jal`/`jalr` into `ra` or a `c.jal`/`c.jalr`.
+
+The other boots: a store through a pointer to unmapped memory (store access fault, `mtval` = the address), an atomic add on a counter one byte into a frame buffer (misaligned AMO; QEMU 9.2 reports it as load misaligned, cause 4, where the spec and most cores say cause 6 or an access fault), a failed assert, and boot 4 repeating boot 0.
+
+QEMU only. I have not run this on RISC-V silicon. What QEMU does not tell you about your chip: whether its boot ROM or reset logic clears SRAM, what reset register to use in `lw_reboot()`, and whether your SDK's startup already owns `mtvec` and `mscratch`.
 
 ## Compared with
 
@@ -202,6 +246,7 @@ make test         # host tests at ring sizes 256, 1024, 4096; signatures, repeat
 make test-asan    # same under AddressSanitizer + UBSan
 make qemu         # needs arm-none-eabi-gcc and qemu-system-arm
 make cross        # compile-only for M0+, M23, M33, M55 and friends
+make riscv        # needs riscv-none-elf-gcc and qemu-system-riscv32 (xPack builds in CI)
 make footprint    # flash cost on Cortex-M3
 make count        # instructions per lw_log(), from a QEMU execution trace
 ./build/test_1024 1000000   # the random-ring trial from the table
@@ -217,6 +262,7 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 - Faults are recorded as HardFault unless you enable the separate MemManage/BusFault/UsageFault exceptions in `SCB->SHCSR`. The CFSR bits still say what happened.
 - ARMv6-M (M0/M0+) and ARMv8-M Baseline (M23) have no fault status registers, so the record has the frame and stack only. `lwsym.py` still flags a cleared Thumb bit in xPSR as a bad jump.
 - The backtrace is a heuristic: odd stack words that point right after a `BL`/`BLX`. Stale return addresses from earlier calls can show up, and frames whose return address lives in a callee-saved register will not.
+- RISC-V: RV32 machine mode only, no RV64, no S-mode/U-mode stacks, no PMP awareness. Tested on QEMU `virt` only. The trap stack is 512 bytes; the deepest path measured at `-Os` is about 370 bytes, so `-O0` builds may need `LW_TRAP_STACK=1024`. `mscratch` is overwritten on the way to a reset; if your RTOS keeps something there, call `lw_trap_capture()` from its handler instead.
 - Records are capped at 255 bytes; `lw_logf` truncates.
 - 16-bit sequence numbers and CRC, see the numbers table for what that costs.
 - Two different bugs with the same exception, fault bits, pc and lr share a signature. Signatures are per build: rebuild and the addresses move, which is what `--elf` grouping is for.
@@ -229,7 +275,7 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 
 **Does it work with FreeRTOS / Zephyr / bare metal?** Bare metal is what the demo runs. FreeRTOS should work, since tasks run on PSP and the entry stub picks the right stack, but I have not tested it under FreeRTOS yet. Zephyr has its own fault handling and coredump; use the logging part with `LW_NO_FAULT_HANDLERS` if you want the ring there.
 
-**RISC-V, ESP32?** The ring, `lw_log` and `lw_print` are plain C and run anywhere (the host tests run them on x86-64). Fault capture is Cortex-M only for now. On ESP-IDF the ring works, but getting the crash into it would mean hooking IDF's own panic handler, which this repo does not do.
+**RISC-V, ESP32?** RV32 machine-mode traps are captured since 0.3, see [RISC-V](#risc-v); QEMU only so far. The ring, `lw_log` and `lw_print` are plain C and run anywhere (the host tests run them on x86-64). On ESP-IDF (Xtensa or RISC-V) the ring works, but IDF owns the trap vector, so getting the crash into the ring would mean hooking its panic handler, which this repo does not do.
 
 **Can I parse the ring on the host instead of printing on the device?** Yes: send `lw_export()` output and run `tools/lwdecode.py` on it, see [Shipping the ring](#shipping-the-ring).
 

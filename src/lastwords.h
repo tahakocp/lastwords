@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define LW_VERSION "0.2.0"
+#define LW_VERSION "0.3.0"
 
 /* Ring size in bytes. Must be a power of two between 256 and 65536. */
 #ifndef LW_RING_SIZE
@@ -164,7 +164,8 @@ void lw_clear(void);
 const void *lw_region(size_t *size);
 
 /* Called after a fault or panic was recorded. The default resets the core
- * through AIRCR.SYSRESETREQ on Cortex-M; it is weak, so define your own to
+ * through AIRCR.SYSRESETREQ on Cortex-M and spins elsewhere (RISC-V has no
+ * standard reset); it is weak, so define your own to
  * flush a UART first or to halt under a debugger. */
 void lw_reboot(void)
 #if defined(__GNUC__)
