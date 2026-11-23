@@ -1130,6 +1130,12 @@ void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
     f->hfsr = *(volatile uint32_t *)0xE000ED2Cu;
     f->mmfar = *(volatile uint32_t *)0xE000ED34u;
     f->bfar = *(volatile uint32_t *)0xE000ED38u;
+#if LW_V8M
+    /* MemManage and UsageFault status is banked; a Non-secure fault that
+     * escalated to the Secure HardFault left its reason in the NS bank. */
+    if ((exc_return & 0x41u) == 0x01u)
+        f->cfsr |= *(volatile uint32_t *)0xE002ED28u;
+#endif
 #endif
 
     size_t len = sizeof *f - (LW_FAULT_STACK_WORDS - f->nstack) * sizeof(uint32_t);
