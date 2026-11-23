@@ -46,7 +46,7 @@ All measured; the commands are in [Running the tests](#running-the-tests).
 
 | | |
 |---|---|
-| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,764 bytes with GCC 15.2, 1,844 with Ubuntu's GCC 14.2 in CI (1,216 with GCC 15.2 and `LW_NO_DEDUP`). Cortex-M33: 1,888, Cortex-M55: 1,904 (GCC 15.2, TrustZone handling included) |
+| Flash added to a minimal Cortex-M3 image, `-Os`, `LW_NO_PRINTF`: init, log, fault capture with repeat detection | 1,764 bytes with GCC 15.2, 1,844 with Ubuntu's GCC 14.2 in CI (1,216 with GCC 15.2 and `LW_NO_DEDUP`). Cortex-M33: 1,896, Cortex-M55: 1,912 (GCC 15.2, TrustZone handling included) |
 | Whole object incl. `lw_print`, `lw_export` and the fault-bit names | 4.8 KB (4.3 KB with `LW_NO_FAULT_NAMES`; the RISC-V trap printer is not compiled for Cortex-M); `lw_export` is 0.7 KB of that and is dropped by `--gc-sections` if unused |
 | RAM | ring size + 24 bytes header (`.noinit`) + 7 bytes `.bss` |
 | `lw_log()` of a 32-byte line, Cortex-M3 | 1,242 instructions with GCC 15.2, 1,298 with 14.2 (QEMU instruction count; real cycles depend on flash wait states) |
@@ -233,7 +233,7 @@ On a core with the Security Extension the fault handlers usually run Secure, whi
 
 | EXC_RETURN | meaning | what lastwords does |
 |---|---|---|
-| ES=1, S=0 | Secure handler, Non-secure code faulted | frame from `MSP_NS` or `PSP_NS` (SPSEL), NS CFSR bank merged in, printed as `in non-secure code` |
+| ES=1, S=0 | Secure handler, Non-secure code faulted | frame from `MSP_NS`, or `PSP_NS` if a Non-secure thread had `CONTROL_NS.SPSEL` set; NS CFSR bank merged in; printed as `in non-secure code` |
 | ES=1, S=1 | Secure handler, Secure code faulted | frame from `MSP`/`PSP` as before |
 | DCRS=0 | r4-r11 and the integrity signature were stacked first | skipped (10 words) after checking the signature `0xFEFA125A/B` |
 | FType=0, S=1, `FPCCR.TS` | s16-s31 were stacked too | sp skips the extra 16 words |
@@ -241,22 +241,22 @@ On a core with the Security Extension the fault handlers usually run Secure, whi
 
 When the handler runs Secure and SFSR is non-zero, SFSR and SFAR go into the record after the stack words, and `lw_print`/`lwdecode.py` name the bits (`INVEP`, `INVIS`, `INVER`, `AUVIOL`, `INVTRAN`, `LSPERR`, `LSERR`). Records without them are unchanged, so 0.3 exports still decode. The signature does not cover SFSR; the exception number already tells a SecureFault apart.
 
-[examples/armv8m](examples/armv8m) is a Secure image for QEMU's `mps3-an547` (Cortex-M55). It opens two SAU regions and enables SecureFault. Boot 0 calls into Non-secure memory with a plain `BLX`, which the core refuses:
+[examples/armv8m](examples/armv8m) is a Secure image for QEMU's `mps3-an547` (Cortex-M55). It opens two SAU regions and enables SecureFault. Six boots: three ways Non-secure and Secure code can die, a Secure BusFault, a repeat, and the readout. Boot 0 calls into Non-secure memory with a plain `BLX`, which the core refuses:
 
 ```text
 [       0] #    2 I calling plugin
 [       0] #    3 !! SecureFault INVTRAN
-   sig=0xbd8c56f5
-   pc=0x000000a0 lr=0x1000017b sp=0x30003fd8 xpsr=0x21000000
+   sig=0x5a78f34f
+   pc=0x000000a0 lr=0x10000195 sp=0x30003fd8 xpsr=0x21000000
    pc -> not in this ELF (jump to a bad address?)
-   lr -> main  main.c:135
-   r0=0x000000a1 r1=0x0000006e r2=0xffffffb2 r3=0x30000052 r12=0x10002047
+   lr -> main  main.c:148
+   r0=0x000000a1 r1=0x0000006e r2=0xffffffb2 r3=0x30000052 r12=0x1000209c
    sfsr=0x00000010
    stack: 0x30000030 0x00000000 0x00000001 0x00000013
-          0x00000000 0x00000000 0x00000000 0x10000263
+          0x00000000 0x00000000 0x00000000 0x10000297
           0x00000000 0xffffffff
    backtrace guess (return addresses found on the stack):
-     0x10000263  Reset_Handler  startup.c:11
+     0x10000297  Reset_Handler  startup.c:11
 ```
 
 Boot 1 enters Non-secure code properly with `BLXNS`, and that code hits an undefined instruction. The Non-secure UsageFault is not enabled, so it escalates to the Secure HardFault, which finds the frame on the Non-secure main stack (`sp` is the top of the `MSP_NS` area, `lr` is the FNC_RETURN value):
@@ -266,7 +266,7 @@ Boot 1 enters Non-secure code properly with `BLXNS`, and that code hits an undef
    sig=0xfcf5586b
    pc=0x000000a0 lr=0xfeffffff sp=0x20010000 xpsr=0x21000000
    pc -> not in this ELF (jump to a bad address?)
-   r0=0x000000a0 r1=0x00000065 r2=0xfffffee0 r3=0x20010000 r12=0x10002047
+   r0=0x000000a0 r1=0x00000065 r2=0xfffffee0 r3=0x20010000 r12=0x1000209c
    cfsr=0x00010000 hfsr=0x40000000
    stack: 0x00000000 0x00000000 0x00000000 0x00000000
           0x00000000 0x00000000 0x00000000 0x00000000
@@ -274,9 +274,11 @@ Boot 1 enters Non-secure code properly with `BLXNS`, and that code hits an undef
           0x00000000 0x00000000 0x00000000 0x00000000
 ```
 
+Boot 2 runs a Non-secure function that moves itself onto a process stack (`msr psp`, `CONTROL.SPSEL=1`) before it hits `udf`; the record shows `pc=0x000000b8` and `sp=0x2000c000`, the `PSP_NS` it set. Getting that right took one detour: in QEMU the EXC_RETURN.SPSEL bit a Secure handler sees for a Non-secure fault follows the Secure CONTROL, and said `MSP_NS`. The entry now reads `CONTROL_NS.SPSEL` for that case instead, which is correct whichever way a core fills the bit.
+
 `pc` is the Non-secure alias of the function (`0x100000a0` in the Secure image). In a real system the Non-secure side is a separate ELF; point `lwsym.py` at that one for these records.
 
-QEMU only. Not tested: a fault from a Non-secure thread on `PSP_NS`, the DCRS=0 and `FPCCR.TS` paths (QEMU did not produce them in this demo; the code follows the Armv8-M ARM), Non-secure handlers with `AIRCR.BFHFNMINS=1`, and any real M33/M55 silicon.
+QEMU only. Not tested: the DCRS=0 and `FPCCR.TS` paths (QEMU did not produce them in this demo; the code follows the Armv8-M ARM), Non-secure handlers with `AIRCR.BFHFNMINS=1`, and any real M33/M55 silicon.
 
 ## Compared with
 

@@ -1,12 +1,13 @@
 /*
  * lastwords on a TrustZone Cortex-M55 (QEMU mps3-an547), linked as the
- * Secure image. Five boots in one QEMU run:
+ * Secure image. Six boots in one QEMU run:
  *   0  Secure code jumps into Non-secure memory without BLXNS: SecureFault INVTRAN
  *   1  Non-secure code hits an undefined instruction; the Secure HardFault
  *      handler records it from the Non-secure main stack (MSP_NS)
- *   2  Secure store to an unmapped address: BusFault
- *   3  the boot 0 bug again, stored as a repeat
- *   4  prints the ring and the export, exits
+ *   2  the same from a Non-secure thread that switched to its process stack (PSP_NS)
+ *   3  Secure store to an unmapped address: BusFault
+ *   4  the boot 0 bug again, stored as a repeat
+ *   5  prints the ring and the export, exits
  */
 #include <stdint.h>
 #include <string.h>
@@ -86,6 +87,18 @@ __attribute__((naked, noinline)) void ns_driver_poll(void)
     __asm volatile("udf #7\n");
 }
 
+/* Non-secure too: moves itself onto a process stack, like an RTOS task. */
+__attribute__((naked, noinline)) void ns_task_run(void)
+{
+    __asm volatile("movw r0, #0xc000\n"
+                   "movt r0, #0x2000\n"
+                   "msr psp, r0\n"
+                   "movs r0, #2\n"
+                   "msr control, r0\n"
+                   "isb\n"
+                   "udf #8\n");
+}
+
 __attribute__((noinline)) static void plugin_call(uint32_t entry)
 {
     void (*fn)(void) = (void (*)(void))entry;
@@ -130,7 +143,7 @@ int main(void)
     uint32_t plugin = (uint32_t)(uintptr_t)ns_driver_poll - NS_ALIAS;
     switch (st.boot) {
     case 0:
-    case 3:
+    case 4:
         lw_log(LW_INFO, "calling plugin");
         plugin_call(plugin);
         break;
@@ -138,7 +151,11 @@ int main(void)
         lw_log(LW_INFO, "starting non-secure side");
         ns_start(plugin);
         break;
-    case 2: {
+    case 2:
+        lw_log(LW_INFO, "starting non-secure task");
+        ns_start((uint32_t)(uintptr_t)ns_task_run - NS_ALIAS);
+        break;
+    case 3: {
         static const struct config cfg = {(volatile uint32_t *)0x0f000000u, 3};
         lw_log(LW_INFO, "applying DMA config");
         config_apply(&cfg);
@@ -152,7 +169,7 @@ int main(void)
         say("---- export ----\n");
         lw_export(say_hex, 0);
         say("---- end export ----\n");
-        sh_exit(st.boot == 4);
+        sh_exit(st.boot == 5);
     }
 
     say("expected a fault, got none\n");

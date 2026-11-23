@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 (2026-11-23)
+
+- Fix: a Non-secure thread running on its process stack was recorded from `MSP_NS`. In QEMU the EXC_RETURN.SPSEL bit a Secure handler gets for a Non-secure fault follows the Secure CONTROL, so the entry now picks `MSP_NS`/`PSP_NS` from `CONTROL_NS.SPSEL` (Non-secure handler mode: always `MSP_NS`).
+- `examples/armv8m`: sixth boot, a Non-secure function that switches to `PSP_NS` and faults; the check requires its record to show that stack.
+- `lwsym.py` no longer calls addr2line with a negative address when lr is 0.
+- Flash: M33 1,896, M55 1,912 (+8 over 0.4.0); other cores unchanged.
+
 ## 0.4.0 (2026-11-23)
 
 - TrustZone-aware fault capture on ARMv8-M. `lw_fault_entry` takes the frame from `MSP_NS`/`PSP_NS` when a Secure handler catches a Non-secure fault (EXC_RETURN ES=1, S=0), and from `MSP`/`PSP` otherwise. Same Thumb-1 entry on M23.

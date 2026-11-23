@@ -55,7 +55,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi binutils-arm-none-eabi qemu-system-arm
           arm-none-eabi-gcc --version | head -1
           qemu-system-arm --version | head -1
-      - name: five boots on a TrustZone Cortex-M55 (mps3-an547)
+      - name: six boots on a TrustZone Cortex-M55 (mps3-an547)
         run: make armv8m
       - uses: actions/upload-artifact@v4
         if: always()

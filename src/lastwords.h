@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define LW_VERSION "0.4.0"
+#define LW_VERSION "0.4.1"
 
 /* Ring size in bytes. Must be a power of two between 256 and 65536. */
 #ifndef LW_RING_SIZE
