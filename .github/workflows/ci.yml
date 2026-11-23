@@ -12,7 +12,7 @@ jobs:
         cc: [gcc, clang]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: make test CC=${{ matrix.cc }}
       - run: make test-asan CC=${{ matrix.cc }}
       - name: CMake consumer build
@@ -23,7 +23,7 @@ jobs:
   qemu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install arm-none-eabi-gcc and qemu
         run: |
           sudo apt-get update
@@ -51,7 +51,7 @@ jobs:
       XPACK_GCC: 14.2.0-3
       XPACK_QEMU: 9.2.4-1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install xPack riscv-none-elf-gcc and qemu-system-riscv32
         run: |
           mkdir -p ~/xpack && cd ~/xpack
