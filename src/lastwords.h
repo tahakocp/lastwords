@@ -57,7 +57,9 @@ struct lw_boot_info {
 };
 
 /* Exception frame as stacked by the core, plus the fault status registers.
- * On ARMv6-M / ARMv8-M Baseline cfsr..bfar read as zero. */
+ * On ARMv6-M / ARMv8-M Baseline cfsr..bfar read as zero.
+ * A record captured in Secure state with SFSR non-zero carries two more
+ * words right after the nstack stack words: SFSR and SFAR. */
 struct lw_fault_info {
     uint32_t r0, r1, r2, r3, r12, lr, pc, xpsr;
     uint32_t exc_return;

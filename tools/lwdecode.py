@@ -24,6 +24,7 @@ CFSR_NAMES = [(0, "IACCVIOL"), (1, "DACCVIOL"), (3, "MUNSTKERR"), (4, "MSTKERR")
               (8, "IBUSERR"), (9, "PRECISERR"), (10, "IMPRECISERR"), (11, "UNSTKERR"), (12, "STKERR"),
               (13, "LSPERR"), (16, "UNDEFINSTR"), (17, "INVSTATE"), (18, "INVPC"), (19, "NOCP"),
               (20, "STKOF"), (24, "UNALIGNED"), (25, "DIVBYZERO")]
+SFSR_NAMES = ["INVEP", "INVIS", "INVER", "AUVIOL", "INVTRAN", "LSPERR", None, "LSERR"]
 EXC = {3: "HardFault", 4: "MemManage", 5: "BusFault", 6: "UsageFault", 7: "SecureFault"}
 TRAP_NAMES = ["instruction misaligned", "instruction access fault", "illegal instruction", "breakpoint",
               "load misaligned", "load access fault", "store misaligned", "store access fault",
@@ -191,7 +192,10 @@ def print_entry(e, l):
         l.flush()
     elif rtype == T_FAULT:
         w = list(struct.unpack_from(f"<{min(len(d), 128) // 4}I", d)) + [0] * 32
-        r0, r1, r2, r3, r12, lr, pc, xpsr, _, sp, ipsr, cfsr, hfsr, mmfar, bfar, nstack = w[:16]
+        r0, r1, r2, r3, r12, lr, pc, xpsr, exc_return, sp, ipsr, cfsr, hfsr, mmfar, bfar, nstack = w[:16]
+        nstack = min(nstack, STACK_WORDS)
+        tail = 64 + 4 * nstack
+        sfsr, sfar = struct.unpack_from("<2I", d, tail) if len(d) >= tail + 8 else (0, 0)
         l.s("!! " + EXC.get(ipsr, "exception"))
         for bit, name in CFSR_NAMES:
             if cfsr >> bit & 1:
@@ -200,6 +204,11 @@ def print_entry(e, l):
             l.s(" FORCED")
         if hfsr >> 1 & 1:
             l.s(" VECTTBL")
+        for bit, name in enumerate(SFSR_NAMES):
+            if sfsr >> bit & 1 and name:
+                l.s(" " + name)
+        if exc_return >> 24 == 0xFF and exc_return & 0x41 == 0x01:
+            l.s(" in non-secure code")
         l.flush()
         l.s("  ")
         l.kv("sig", signature(rtype, d))
@@ -221,7 +230,13 @@ def print_entry(e, l):
             if cfsr >> 15 & 1:
                 l.kv("bfar", bfar)
             l.flush()
-        print_stack(l, w[16:16 + min(nstack, STACK_WORDS)])
+        if sfsr:
+            l.s("  ")
+            l.kv("sfsr", sfsr)
+            if sfsr >> 6 & 1:
+                l.kv("sfar", sfar)
+            l.flush()
+        print_stack(l, w[16:16 + nstack])
     elif rtype == T_TRAP:
         w = list(struct.unpack_from(f"<{min(len(d), 108) // 4}I", d)) + [0] * 27
         mcause, mepc, mtval, mstatus, ra, sp, a0, a1, a2, a3, nstack = w[:11]

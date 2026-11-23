@@ -35,6 +35,9 @@
     defined(__ARM_ARCH_8_1M_MAIN__)
 #define LW_HAS_CFSR 1
 #endif
+#if defined(__ARM_ARCH_8M_BASE__) || defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8_1M_MAIN__)
+#define LW_V8M 1 /* EXC_RETURN carries ES, S, DCRS; TrustZone may be present */
+#endif
 #endif
 
 #if defined(__riscv) && __riscv_xlen == 32
@@ -693,6 +696,8 @@ static void l_kv(struct line *l, const char *k, uint32_t v)
 }
 
 #ifndef LW_NO_FAULT_NAMES
+static const char *const sfsr_names[] = {"INVEP", "INVIS", "INVER", "AUVIOL", "INVTRAN", "LSPERR", NULL, "LSERR"};
+
 static const struct {
     uint8_t bit;
     const char *name;
@@ -723,6 +728,11 @@ static void print_fault(struct line *l, const struct lw_entry *e)
     memcpy(&f, e->data, e->len < sizeof f ? e->len : sizeof f);
     if (f.nstack > LW_FAULT_STACK_WORDS)
         f.nstack = LW_FAULT_STACK_WORDS;
+    uint32_t sfsr = 0, sfar = 0, tail = 64 + 4 * f.nstack;
+    if (e->len >= tail + 8) {
+        memcpy(&sfsr, e->data + tail, 4);
+        memcpy(&sfar, e->data + tail + 4, 4);
+    }
 
     l_str(l, "!! ");
     l_str(l, exc_name(f.ipsr));
@@ -737,7 +747,16 @@ static void print_fault(struct line *l, const struct lw_entry *e)
         l_str(l, " FORCED");
     if (f.hfsr & (1u << 1))
         l_str(l, " VECTTBL");
+    for (uint32_t i = 0; i < 8; i++) {
+        if (sfsr & (1u << i) && sfsr_names[i]) {
+            l_ch(l, ' ');
+            l_str(l, sfsr_names[i]);
+        }
+    }
 #endif
+    /* EXC_RETURN.ES=1, S=0: a Secure handler caught a Non-secure fault. */
+    if ((f.exc_return >> 24) == 0xffu && (f.exc_return & 0x41u) == 0x01u)
+        l_str(l, " in non-secure code");
     l_flush(l);
     l_str(l, "  ");
     l_kv(l, "sig", lw_signature(e));
@@ -763,6 +782,13 @@ static void print_fault(struct line *l, const struct lw_entry *e)
             l_kv(l, "mmfar", f.mmfar);
         if (f.cfsr & (1u << 15))
             l_kv(l, "bfar", f.bfar);
+        l_flush(l);
+    }
+    if (sfsr) {
+        l_str(l, "  ");
+        l_kv(l, "sfsr", sfsr);
+        if (sfsr & (1u << 6))
+            l_kv(l, "sfar", sfar);
         l_flush(l);
     }
     for (uint32_t i = 0; i < f.nstack; i++) {
@@ -1042,7 +1068,11 @@ void lw_trap_install(void)
 
 void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
 {
-    struct lw_fault_info f;
+    struct {
+        struct lw_fault_info f;
+        uint32_t room[2]; /* SFSR and SFAR land right after the stack words in use */
+    } r;
+    struct lw_fault_info *f = &r.f;
     uint32_t ipsr;
 
     if (lw_in_fault)
@@ -1050,53 +1080,96 @@ void lw_fault_capture(uint32_t exc_return, uint32_t *frame)
     lw_in_fault = 1;
 
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
-    memset(&f, 0, sizeof f);
-    f.exc_return = exc_return;
-    f.ipsr = ipsr & 0x1ff;
+    memset(&r, 0, sizeof r);
+    f->exc_return = exc_return;
+    f->ipsr = ipsr & 0x1ff;
+
+#if LW_V8M
+    /* DCRS=0: r4-r11 and the integrity signature sit below the basic frame.
+     * Only a Secure handler sees this, after it interrupted Secure code. */
+    if ((exc_return & 0x20u) == 0 && ((uintptr_t)frame & 3u) == 0 && (frame[0] | 1u) == 0xFEFA125Bu)
+        frame += 10;
+#endif
 
     if (((uintptr_t)frame & 3u) == 0) {
-        f.r0 = frame[0];
-        f.r1 = frame[1];
-        f.r2 = frame[2];
-        f.r3 = frame[3];
-        f.r12 = frame[4];
-        f.lr = frame[5];
-        f.pc = frame[6];
-        f.xpsr = frame[7];
+        f->r0 = frame[0];
+        f->r1 = frame[1];
+        f->r2 = frame[2];
+        f->r3 = frame[3];
+        f->r12 = frame[4];
+        f->lr = frame[5];
+        f->pc = frame[6];
+        f->xpsr = frame[7];
 
         uint32_t words = 8;
-        if ((exc_return & 0x10u) == 0)
+        if ((exc_return & 0x10u) == 0) {
             words += 18; /* extended frame: s0-s15, fpscr, reserved */
-        if (f.xpsr & (1u << 9))
+#if LW_V8M && LW_HAS_CFSR
+            /* FPCCR.TS with Secure code interrupted: s16-s31 were stacked too. */
+            if ((exc_return & 0x40u) && (*(volatile uint32_t *)0xE000EF34u & (1u << 26)))
+                words += 16;
+#endif
+        }
+        if (f->xpsr & (1u << 9))
             words += 1; /* the core padded the frame to 8-byte alignment */
         uint32_t *sp = frame + words;
-        f.sp = (uint32_t)(uintptr_t)sp;
+        f->sp = (uint32_t)(uintptr_t)sp;
 
-        uint32_t limit = stack_limit();
+        /* The Secure stack limit means nothing for a Non-secure stack. */
+        uint32_t limit = (exc_return & 0x41u) == 0x01u ? 0 : stack_limit();
         uint32_t n = 0;
         while (n < LW_FAULT_STACK_WORDS && (limit == 0 || (uintptr_t)(sp + n) < limit)) {
-            f.stack[n] = sp[n];
+            f->stack[n] = sp[n];
             n++;
         }
-        f.nstack = n;
+        f->nstack = n;
     }
 
 #if LW_HAS_CFSR
-    f.cfsr = *(volatile uint32_t *)0xE000ED28u;
-    f.hfsr = *(volatile uint32_t *)0xE000ED2Cu;
-    f.mmfar = *(volatile uint32_t *)0xE000ED34u;
-    f.bfar = *(volatile uint32_t *)0xE000ED38u;
+    f->cfsr = *(volatile uint32_t *)0xE000ED28u;
+    f->hfsr = *(volatile uint32_t *)0xE000ED2Cu;
+    f->mmfar = *(volatile uint32_t *)0xE000ED34u;
+    f->bfar = *(volatile uint32_t *)0xE000ED38u;
 #endif
 
-    size_t len = sizeof f - (LW_FAULT_STACK_WORDS - f.nstack) * sizeof(uint32_t);
-    record_crash(LW_T_FAULT, &f, len, NULL, 0);
+    size_t len = sizeof *f - (LW_FAULT_STACK_WORDS - f->nstack) * sizeof(uint32_t);
+#if LW_V8M
+    /* SFSR is RAZ from Non-secure state and absent without TrustZone, so it
+     * is only read when the handler runs Secure (ES=1). */
+    if (exc_return & 1u) {
+        uint32_t sec[2] = {*(volatile uint32_t *)0xE000EDE4u, *(volatile uint32_t *)0xE000EDE8u};
+        if (sec[0]) {
+            memcpy((uint8_t *)f + len, sec, sizeof sec);
+            len += sizeof sec;
+        }
+    }
+#endif
+    record_crash(LW_T_FAULT, f, len, NULL, 0);
     lw_reboot();
 }
 
 __attribute__((naked)) void lw_fault_entry(void)
 {
-    /* Thumb-1 only, so the same entry works on ARMv6-M. */
-    __asm volatile("mov r0, lr\n"
+    /* Thumb-1 only, so the same entry works on ARMv6-M and ARMv8-M Baseline. */
+    /* GCC hands Thumb-1 targets' inline asm over in divided syntax. */
+    __asm volatile(".syntax unified\n"
+                   "mov r0, lr\n"
+#if LW_V8M
+                   /* ES=1, S=0: Secure handler, frame on a Non-secure stack. */
+                   "lsls r2, r0, #31\n" /* ES into Z */
+                   "beq 3f\n"
+                   "lsls r2, r0, #25\n" /* S into N */
+                   "bmi 3f\n"
+                   "movs r2, #4\n"
+                   "tst r0, r2\n"
+                   "bne 4f\n"
+                   "mrs r1, msp_ns\n"
+                   "b 2f\n"
+                   "4:\n"
+                   "mrs r1, psp_ns\n"
+                   "b 2f\n"
+                   "3:\n"
+#endif
                    "movs r2, #4\n"
                    "tst r0, r2\n"
                    "bne 1f\n"

@@ -322,6 +322,33 @@ static void test_export(void)
     dump("riscv", &x);
     printf("riscv-shaped ring: %u bytes of records, export %u bytes\n", used_bytes(), x);
 
+    /* ARMv8-M Secure: an INVTRAN SecureFault with SFSR/SFAR, then a
+     * Non-secure fault caught by the Secure HardFault. */
+    wipe();
+    {
+        struct {
+            struct lw_fault_info f;
+            uint32_t room[2];
+        } r;
+        memset(&r, 0, sizeof r);
+        r.f = make_fault(0x10000200u, 0x10000123u, 0);
+        r.f.ipsr = 7;
+        r.f.exc_return = 0xfffffffdu;
+        r.f.nstack = 4;
+        size_t len = sizeof r.f - (LW_FAULT_STACK_WORDS - 4) * 4;
+        uint32_t sec[2] = {0x50u, 0x00001000u}; /* INVTRAN, SFARVALID */
+        memcpy((uint8_t *)&r.f + len, sec, sizeof sec);
+        lw_init(0);
+        crash_len(&r.f, len + sizeof sec);
+        lw_init(0);
+        struct lw_fault_info f = make_fault(0x00000300u, 0x00000201u, 0x8200u);
+        f.exc_return = 0xffffffa9u;
+        crash(&f);
+    }
+    lw_init(0);
+    dump("armv8m", &x);
+    printf("armv8m-shaped ring: %u bytes of records, export %u bytes\n", used_bytes(), x);
+
     /* A full ring of random lines, levels, blobs, crashes and clock jumps. */
     for (int round = 0; round < 50; round++) {
         wipe();
@@ -332,7 +359,26 @@ static void test_export(void)
             if (r == 0) {
                 struct lw_fault_info f = make_fault(rnd() & 0xfffe, rnd() | 1, rnd() & 0x030f8200u);
                 f.nstack = rnd() % (LW_FAULT_STACK_WORDS + 1);
-                crash_len(&f, sizeof f - (LW_FAULT_STACK_WORDS - f.nstack) * 4);
+                size_t len = sizeof f - (LW_FAULT_STACK_WORDS - f.nstack) * 4;
+                if (rnd() % 3 == 0) {
+                    /* ARMv8-M: Secure handler, frame from either side, SFSR/SFAR tail */
+                    static const uint32_t exc[] = {0xfffffffdu, 0xffffffadu, 0xffffffa9u, 0xffffffbcu, 0xffffff8du};
+                    struct {
+                        struct lw_fault_info f;
+                        uint32_t room[2];
+                    } r;
+                    uint32_t sec[2] = {rnd() & 0xffu, rnd()};
+                    memset(&r, 0, sizeof r);
+                    f.exc_return = exc[rnd() % 5];
+                    r.f = f;
+                    if (sec[0]) {
+                        memcpy((uint8_t *)&r.f + len, sec, sizeof sec);
+                        len += sizeof sec;
+                    }
+                    crash_len(&r.f, len);
+                } else {
+                    crash_len(&f, len);
+                }
                 lw_init(rnd());
             } else if (r == 3) {
                 struct lw_trap_info t = make_trap(rnd() % 3 ? rnd() % 16 : rnd(), rnd() & 0xfffe, rnd());
