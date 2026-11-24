@@ -1,0 +1,46 @@
+name: pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install arm-none-eabi-gcc and qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi binutils-arm-none-eabi qemu-system-arm
+      - name: build and run the QEMU demo for the sample button
+        run: make qemu
+      - name: symbolizer core against addr2line and lwsym.py
+        run: node tests/check_web.mjs examples/qemu/build/demo-m3.elf
+      - name: assemble site
+        run: |
+          mkdir -p _site/demo
+          cp web/index.html web/app.js web/lwcore.js _site/
+          cp examples/qemu/build/demo-m3.elf examples/qemu/build/run-m3.log _site/demo/
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
