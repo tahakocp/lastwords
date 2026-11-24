@@ -16,6 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # the first run sat in apt-get for 7 minutes
     steps:
       - uses: actions/checkout@v5
       - name: install arm-none-eabi-gcc and qemu
