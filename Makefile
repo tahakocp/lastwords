@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu riscv armv8m size footprint count cross clean
+.PHONY: test test-asan qemu riscv armv8m rust size footprint count cross clean
 
 CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
@@ -38,6 +38,10 @@ riscv:
 # TrustZone Cortex-M55 on QEMU mps3-an547, Secure image with a Non-secure call.
 armv8m:
 	$(MAKE) -C examples/armv8m run
+
+# Rust binding: host test against the C twin and lwdecode.py.
+rust:
+	cd rust && cargo test --features test-hook -- --nocapture
 
 # Compile-only check for cores QEMU's free machines do not cover.
 cross:

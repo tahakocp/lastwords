@@ -98,3 +98,12 @@ jobs:
         with:
           name: riscv-transcript
           path: examples/riscv/build/run-rv32.txt
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust binding, same export bytes as the C API
+        run: |
+          cargo --version
+          make rust

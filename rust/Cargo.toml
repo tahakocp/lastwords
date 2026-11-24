@@ -1,0 +1,19 @@
+[package]
+name = "lastwords"
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Rust bindings for lastwords, a crash flight recorder for Cortex-M and RV32"
+license = "MIT"
+repository = "https://github.com/tahakocp/lastwords"
+links = "lastwords"
+build = "build.rs"
+include = ["src", "build.rs", "csrc"]
+
+[features]
+# Builds the C library with LW_TEST_HOOK (fault records without a fault). Host tests only.
+test-hook = []
+
+[dependencies]
+
+[workspace]
