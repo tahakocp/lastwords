@@ -21,6 +21,8 @@ New in 0.4: TrustZone on ARMv8-M. A Secure fault handler reads the frame from `M
 
 New in 0.5: a symbolizer that runs in the browser, at [tahakocp.github.io/lastwords](https://tahakocp.github.io/lastwords/). Drop the ELF and an export; it prints what `lwdecode.py | lwsym.py` would, without a toolchain or Python and without uploading anything. See [In the browser](#in-the-browser).
 
+New in 0.6: a `no_std` Rust crate in [rust/](rust). It compiles the same C file for your target and wraps it, so a Rust firmware gets the same records, export bytes and fault capture, and `lastwords::log!` formats with `core::fmt` instead of `vsnprintf`. See [Rust](#rust).
+
 This is what the last boot of the [QEMU demo](examples/qemu) prints about boot 0, after `tools/lwsym.py` added the source lines:
 
 ```text
@@ -303,6 +305,47 @@ Boot 2 runs a Non-secure function that moves itself onto a process stack (`msr p
 
 QEMU only. Not tested: the DCRS=0 and `FPCCR.TS` paths (QEMU did not produce them in this demo; the code follows the Armv8-M ARM), Non-secure handlers with `AIRCR.BFHFNMINS=1`, and any real M33/M55 silicon.
 
+## Rust
+
+[rust/](rust) is a binding, not a rewrite. `build.rs` compiles `src/lastwords.c` with the C compiler that matches the Rust target (`arm-none-eabi-gcc` for `thumbv6m`/`v7m`/`v7em`/`v8m`, `riscv-none-elf-gcc` for `riscv32*`, `cc` on the host) and links it as a static library. No dependencies, not even the `cc` crate. On bare metal it builds with `LW_NO_PRINTF`; formatting is done in Rust.
+
+```rust
+use lastwords::{log, Level, Start};
+
+if lastwords::init(rcc_csr) == Start::Crashed {
+    lastwords::export(|chunk| uart.write(chunk));   // or lastwords::print(|line| ...)
+}
+lastwords::set_clock(Some(millis));
+log!(Level::Warn, "rail {} mV, retry {}", mv, n);   // 255-byte line on the stack
+if free_blocks <= 4 {
+    lastwords::fatal!("pool_take: free_blocks <= 4"); // PANIC record with this pc, then reset
+}
+```
+
+The fault handlers come from the C object (`HardFault_Handler` and friends), so put them in your vector table, as [rust/qemu](rust/qemu/src/main.rs) does. `cortex-m-rt` owns the vector table and its own `HardFault` symbol; wiring lastwords into it is not done or tested yet. `LASTWORDS_RING_SIZE` sets the ring size, `LASTWORDS_CFLAGS` adds defines and `LASTWORDS_CC` picks the compiler.
+
+`fatal!` is a macro on purpose. The C side records its own return address; from an `#[inline(always)]` function that address is right, but addr2line (without `-i`) then names the inlined helper instead of your function. Rust's own `panic!` is not recorded: a panic handler has the file and line but no address to sign the crash with, so it would give every panic the same signature.
+
+How it is checked:
+
+- `make rust`: [rust/tests/host.rs](rust/tests/host.rs) runs a scenario through the Rust API (two boots, a fault, a repeat, a 300-byte line cut to 255, a wrapped ring) and [rust/tests/twin.c](rust/tests/twin.c) runs the same one through the C API. The 659-byte exports must be identical byte for byte, the `lw_print` text too, and `tools/lwdecode.py` must turn the Rust export into the Rust-side `print` text. Changing the twin's loop from 40 to 39 iterations makes it fail, so the comparison is live.
+- `make rust-qemu`: [rust/qemu](rust/qemu) is the QEMU demo's story with no runtime crates (own vector table and reset handler) on `mps2-an385`. Five boots: a store to unmapped memory (PRECISERR, `bfar=0x30000000`), `fatal!`, a jump without the Thumb bit (INVSTATE), the first bug again (repeat record), then print and export. `tests/check_rust_qemu.py` wants each crash pinned to the right Rust function by `lwsym.py`; `tests/check_export.py` wants the 820-byte export to decode to what the device printed.
+- CI builds the crate for `thumbv6m-none-eabi` and `thumbv7m-none-eabi` and runs both checks.
+
+```text
+[       2] #    5 !! HardFault PRECISERR FORCED
+   pc -> lastwords_qemu_demo::config_apply  rust/qemu/src/main.rs:109
+   lr -> lastwords_qemu_demo::main  rust/qemu/src/main.rs:147
+[       2] #   11 !! panic pc=0x000003d3: pool_take: free_blocks <= 4
+   called from lastwords_qemu_demo::pool_take  rust/qemu/src/main.rs:115
+[       2] #   23 !! repeat sig=0xfbdcb044 count=1
+   same crash as #5: lastwords_qemu_demo::config_apply  rust/qemu/src/main.rs:109
+```
+
+The demo image is 16.2 KB of `.text`, about 6 KB of it `core::fmt` (the demo prints `Debug` names and the whole ring); the C part is the same object the C numbers above measure.
+
+Not done yet: the crate is not on crates.io (it reads `../src`; a `csrc/` copy is picked up first when present), no `cortex-m-rt` example, no Embassy/RTIC lock integration (on Cortex-M the C side masks interrupts around each write), RISC-V and ARMv8-M Rust targets compile-checked only through the C side. The browser symbolizer does not demangle Rust names yet, so use `lwsym.py` for Rust ELFs.
+
 ## Compared with
 
 | | what it keeps across reset | size / scope | license |
@@ -327,6 +370,8 @@ make cross        # compile-only for M0+, M23, M33, M55 and friends
 make riscv        # needs riscv-none-elf-gcc and qemu-system-riscv32 (xPack builds in CI)
 make armv8m       # TrustZone Cortex-M55 on qemu-system-arm mps3-an547
 make footprint    # flash cost on Cortex-M3
+make rust         # Rust binding vs the C API, byte for byte (needs cargo)
+make rust-qemu    # Rust demo on mps2-an385 (thumbv7m-none-eabi target, arm-none-eabi-gcc, qemu-system-arm)
 node tests/check_web.mjs examples/*/build/demo-*.elf   # browser symbolizer vs addr2line and the Python tools
 make count        # instructions per lw_log(), from a QEMU execution trace
 ./build/test_1024 1000000   # the random-ring trial from the table
@@ -345,6 +390,7 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 - RISC-V: RV32 machine mode only, no RV64, no S-mode/U-mode stacks, no PMP awareness. Tested on QEMU `virt` only. The trap stack is 512 bytes; the deepest path measured at `-Os` is about 370 bytes, so `-O0` builds may need `LW_TRAP_STACK=1024`. `mscratch` is overwritten on the way to a reset; if your RTOS keeps something there, call `lw_trap_capture()` from its handler instead.
 - TrustZone: the Secure side records everything; a Non-secure-only build cannot see SFSR or Secure state. Non-secure addresses in a Secure record are not symbolized against the Secure ELF.
 - Browser symbolizer: ELF32 little-endian and 32-bit DWARF only, no split DWARF (`.dwo`), no compressed debug sections, no C++ demangling. Checked only against GCC-built QEMU demo ELFs; Clang or IAR output may give different names or lines than addr2line.
+- Rust: a binding over the C file, tested on the host and in QEMU on a Cortex-M3 only. Rust `panic!` is not recorded (no address to sign it with); use `fatal!`. The browser page shows mangled Rust names.
 - Records are capped at 255 bytes; `lw_logf` truncates.
 - 16-bit sequence numbers and CRC, see the numbers table for what that costs.
 - Two different bugs with the same exception, fault bits, pc and lr share a signature. Signatures are per build: rebuild and the addresses move, which is what `--elf` grouping is for.

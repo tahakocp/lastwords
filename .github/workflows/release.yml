@@ -17,6 +17,10 @@ jobs:
           name=lastwords-${GITHUB_REF_NAME#v}
           mkdir -p dist/$name
           cp src/lastwords.c src/lastwords.h tools/lwsym.py tools/lwdecode.py LICENSE README.md CHANGELOG.md dist/$name/
+          cp -r web dist/$name/web
+          mkdir -p dist/$name/rust && cp -r rust/Cargo.toml rust/build.rs rust/src rust/qemu dist/$name/rust/
+          rm -rf dist/$name/rust/qemu/target
+          mkdir -p dist/$name/rust/csrc && cp src/lastwords.c src/lastwords.h dist/$name/rust/csrc/
           (cd dist && zip -r $name.zip $name)
       - name: publish
         env:

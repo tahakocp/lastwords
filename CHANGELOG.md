@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (2026-11-24)
+
+- Rust crate in `rust/` (`no_std`, no dependencies). `build.rs` compiles `src/lastwords.c` for the target with the matching GCC and links it. API: `init`, `set_clock`, `log`, `log!` (core::fmt into a 255-byte line), `write`, `fatal!`, `for_each`, `print`, `export`, `stats`, `clear`, `region`.
+- `rust/tests/host.rs` + `rust/tests/twin.c`: the same scenario through Rust and C gives the same 659-byte export and the same `lw_print` text; `lwdecode.py` decodes the Rust export to that text.
+- `rust/qemu`: five-boot demo on QEMU `mps2-an385` without runtime crates (PRECISERR, `fatal!`, INVSTATE, repeat); `tests/check_rust_qemu.py`. New CI job `rust`, also builds for thumbv6m and thumbv7m.
+- Release zip now includes `web/` (the browser symbolizer) and `rust/`.
+- No change to the C library's code or record format.
+
 ## 0.5.0 (2026-11-24)
 
 - Browser symbolizer on GitHub Pages (https://tahakocp.github.io/lastwords/): drop an ELF and an export or UART log, get the `lwdecode.py | lwsym.py` output. Runs locally in the page.
