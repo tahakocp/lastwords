@@ -34,6 +34,8 @@ jobs:
         run: make cross
       - name: five boots, four crashes, on M0/M3/M4/M7
         run: make qemu
+      - name: web symbolizer against addr2line and lwsym.py
+        run: node tests/check_web.mjs examples/qemu/build/demo-m{0,3,4,7}.elf
       - name: footprint and instruction count
         run: |
           make size
@@ -57,6 +59,8 @@ jobs:
           qemu-system-arm --version | head -1
       - name: six boots on a TrustZone Cortex-M55 (mps3-an547)
         run: make armv8m
+      - name: web symbolizer against addr2line and lwsym.py
+        run: node tests/check_web.mjs examples/armv8m/build/demo-m55.elf
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -87,6 +91,8 @@ jobs:
           done
       - name: six boots, four traps, on QEMU virt
         run: make riscv
+      - name: web symbolizer against addr2line and lwsym.py
+        run: node tests/check_web.mjs examples/riscv/build/demo-rv32.elf
       - uses: actions/upload-artifact@v4
         if: always()
         with:
