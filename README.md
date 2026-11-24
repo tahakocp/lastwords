@@ -7,7 +7,7 @@
 
 ![QEMU demo on Cortex-M3: five boots, then the recovered log with the HardFault pinned to a source line](docs/demo.gif)
 
-<sub>Real run of `make run-m3` in [examples/qemu](examples/qemu), recorded with v0.1.0 (cast file: [docs/demo.cast](docs/demo.cast)). Boot 0 crashed; a later boot printed what boot 0 was doing when it died.</sub>
+<sub>Real run of `make run-m3` in [examples/qemu](examples/qemu), recorded with v0.5.0 (cast file: [docs/demo.cast](docs/demo.cast)). Boot 0 crashed; a later boot printed what boot 0 was doing when it died. The same output from an export, in the browser: [tahakocp.github.io/lastwords](https://tahakocp.github.io/lastwords/).</sub>
 
 lastwords is a crash flight recorder for Cortex-M and 32-bit RISC-V in two C files. Your log calls go into a small ring buffer in a RAM section the startup code never zeroes. When the chip faults, the handler appends the registers and a slice of the stack to the same ring and resets. On the next boot `lw_init()` validates what is left, tells you the previous run crashed, and you print or upload it whenever it suits you.
 
