@@ -107,3 +107,20 @@ jobs:
         run: |
           cargo --version
           make rust
+      - name: install arm-none-eabi-gcc, qemu and the thumbv6m/thumbv7m targets
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi binutils-arm-none-eabi qemu-system-arm
+          rustup target add thumbv6m-none-eabi thumbv7m-none-eabi
+      - name: crate builds for thumbv6m and thumbv7m
+        run: |
+          cd rust
+          cargo build --release --target thumbv6m-none-eabi
+          cargo build --release --target thumbv7m-none-eabi
+      - name: five boots of the Rust demo on mps2-an385
+        run: make rust-qemu
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-transcript
+          path: build/run-rust.txt

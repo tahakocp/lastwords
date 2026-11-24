@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror
 BUILD   := build
 
-.PHONY: test test-asan qemu riscv armv8m rust size footprint count cross clean
+.PHONY: test test-asan qemu riscv armv8m rust rust-qemu size footprint count cross clean
 
 CROSS_CPUS := cortex-m0plus cortex-m3 cortex-m4 cortex-m7 cortex-m23 cortex-m33 cortex-m55
 
@@ -42,6 +42,21 @@ armv8m:
 # Rust binding: host test against the C twin and lwdecode.py.
 rust:
 	cd rust && cargo test --features test-hook -- --nocapture
+
+# Rust demo on QEMU mps2-an385 (needs the thumbv7m-none-eabi target,
+# arm-none-eabi-gcc and qemu-system-arm).
+RUST_ELF := rust/qemu/target/thumbv7m-none-eabi/release/lastwords-qemu-demo
+rust-qemu:
+	cd rust/qemu && cargo build --release
+	@mkdir -p $(BUILD) && rm -f $(BUILD)/run-rust.log
+	timeout 60 qemu-system-arm -machine mps2-an385 -nographic -monitor none -serial none \
+	  -chardev file,id=out,path=$(BUILD)/run-rust.log \
+	  -semihosting-config enable=on,target=native,chardev=out -kernel $(RUST_ELF)
+	python3 tools/lwsym.py $(RUST_ELF) $(BUILD)/run-rust.log > $(BUILD)/run-rust.txt
+	@cat $(BUILD)/run-rust.txt
+	python3 tests/check_export.py $(BUILD)/run-rust.log
+	python3 tests/check_rust_qemu.py $(BUILD)/run-rust.txt
+	@arm-none-eabi-size $(RUST_ELF)
 
 # Compile-only check for cores QEMU's free machines do not cover.
 cross:

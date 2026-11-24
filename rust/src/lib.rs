@@ -41,10 +41,14 @@ type OutFn = unsafe extern "C" fn(*const u8, *mut core::ffi::c_void);
 type SinkFn = unsafe extern "C" fn(*const u8, usize, *mut core::ffi::c_void);
 
 extern "C" {
+    #[doc(hidden)]
+    pub fn lw_panic(msg: *const u8) -> !;
+}
+
+extern "C" {
     fn lw_init(reset_cause: u32) -> u32;
     fn lw_set_clock(now: Option<extern "C" fn() -> u32>);
     fn lw_write(level: u32, ty: u32, data: *const u8, len: usize);
-    fn lw_panic(msg: *const u8) -> !;
     fn lw_foreach(f: VisitFn, ctx: *mut core::ffi::c_void) -> u32;
     fn lw_print(f: OutFn, ctx: *mut core::ffi::c_void);
     fn lw_get_stats(st: *mut RawStats);
@@ -179,17 +183,29 @@ pub fn write(level: Level, kind: Kind, data: &[u8]) {
     unsafe { lw_write(level as u32, kind as u32, data.as_ptr(), n) }
 }
 
-/// Record a panic with the caller's address and reset through `lw_reboot`.
-///
-/// Inlined so the address the C side records is in the calling function,
-/// which is what `lwsym` and the crash signature need. The message is cut
-/// at 127 bytes and at the first NUL.
-#[inline(always)]
-pub fn panic(msg: &str) -> ! {
+/// Copies a message into a NUL-terminated buffer for [`fatal!`].
+#[doc(hidden)]
+pub fn __cstr(msg: &str) -> [u8; 128] {
     let mut buf = [0u8; 128];
     let n = msg.len().min(buf.len() - 1);
     buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
-    unsafe { lw_panic(buf.as_ptr()) }
+    buf
+}
+
+/// `fatal!("msg")`: record a panic with the caller's address and reset
+/// through `lw_reboot`, like `lw_panic()` in C.
+///
+/// A macro, not a function: the C side records its return address, and
+/// that has to land in your function for `lwsym` and the crash signature
+/// to point at it. An `#[inline(always)]` function gets the address right
+/// but `addr2line` without `-i` names the inlined helper instead. The
+/// message is cut at 127 bytes and at the first NUL.
+#[macro_export]
+macro_rules! fatal {
+    ($msg:expr) => {{
+        let buf = $crate::__cstr($msg);
+        unsafe { $crate::lw_panic(buf.as_ptr()) }
+    }};
 }
 
 /// Walk the ring from oldest to newest. Return `false` to stop.
