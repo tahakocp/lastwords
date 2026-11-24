@@ -673,7 +673,10 @@ export class Elf {
   addr2line(addr) {
     if (this.cache.has(addr)) return this.cache.get(addr);
     let func = null, loc = "??:0", found = false;
-    for (const cu of this.unitsFor(addr)) {
+    // addr2line only asks DWARF about addresses inside an allocated section;
+    // functions dropped by --gc-sections still have debug info at address 0.
+    const inSection = this.sections.some((x) => x.flags & 2 && x.addr <= addr && addr < x.addr + x.size);
+    for (const cu of inSection ? this.unitsFor(addr) : []) {
       const l = cu.lines && lookupLine(cu.lines, addr);
       let best = null;
       for (const f of cu.funcs)
@@ -681,7 +684,7 @@ export class Elf {
             (!best || f.hi - f.lo < best.hi - best.lo || (f.hi - f.lo === best.hi - best.lo && f.order > best.order)))
           best = f;
       if (!l && !best) continue;
-      if (l) loc = l;
+      loc = l || "??:?";
       if (best) func = best.name;
       found = true;
       break;
@@ -696,8 +699,11 @@ export class Elf {
   }
 
   unitsFor(addr) {
+    // Like binutils: a unit owns its ranges, its line sequences and its
+    // functions' ranges (assembler units can overshoot by the Thumb bit).
     return this.units.filter((cu) => cu.ranges.some(([lo, hi]) => lo <= addr && addr < hi) ||
-      (cu.lines && cu.lines.seqs.some((s) => s.lo <= addr && addr < s.hi)));
+      (cu.lines && cu.lines.seqs.some((s) => s.lo <= addr && addr < s.hi)) ||
+      cu.funcs.some((f) => f.lo <= addr && addr < f.hi));
   }
 
   // binutils elf_find_function: nearest symbol at or below addr in the
