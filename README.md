@@ -19,6 +19,8 @@ New in 0.3: RV32 machine-mode trap capture. `lw_trap_entry` goes in `mtvec`, a t
 
 New in 0.4: TrustZone on ARMv8-M. A Secure fault handler reads the frame from `MSP_NS`/`PSP_NS` when the fault came from Non-secure code, skips the extra state context when it is there, and stores SFSR/SFAR with every SecureFault. Tested on a Cortex-M55 in QEMU `mps3-an547` only, see [TrustZone](#trustzone-armv8-m).
 
+New in 0.5: a symbolizer that runs in the browser, at [tahakocp.github.io/lastwords](https://tahakocp.github.io/lastwords/). Drop the ELF and an export; it prints what `lwdecode.py | lwsym.py` would, without a toolchain or Python and without uploading anything. See [In the browser](#in-the-browser).
+
 This is what the last boot of the [QEMU demo](examples/qemu) prints about boot 0, after `tools/lwsym.py` added the source lines:
 
 ```text
@@ -190,6 +192,27 @@ That is the M3 QEMU run: the boot 0 crash and its boot 4 repeat are one row.
 
 `--crashes` counts each crash once per occurrence, repeat records included, and with `--elf` also merges signatures whose pc and lr resolve to the same functions, so a crash keeps its row when a rebuild moves the addresses. It is Python 3 only, no packages.
 
+## In the browser
+
+[tahakocp.github.io/lastwords](https://tahakocp.github.io/lastwords/) takes the firmware ELF plus one of: an export `.bin`, a UART log with the hex between the export markers, or plain `lw_print()` text. It decodes the export, then resolves `pc`/`lr` (`mepc`/`ra` on RISC-V), the panic caller and the return addresses on the saved stack, the same way `lwsym.py` does. The "load the Cortex-M3 QEMU demo" button pulls in the ELF and log that the Pages build just produced.
+
+It is one plain JavaScript file, [web/lwcore.js](web/lwcore.js) (no build step, no packages): the export decoder, an ELF32 reader, a DWARF `.debug_info`/`.debug_line` reader (versions 2 to 5, `DW_AT_ranges`, inlined functions) and the binutils rules for falling back to the symbol table. The same module runs under Node, so CI holds it to the Python tools and to addr2line:
+
+```sh
+node tests/check_web.mjs examples/qemu/build/demo-m3.elf    # after make qemu
+```
+
+```text
+ok   m3: 4278/4278 addresses match addr2line (parse 3.4 ms)
+ok   m3: 963 byte export decodes like lwdecode.py
+ok   m3: annotated log matches lwsym.py
+ok   m3: annotated export matches lwsym.py
+```
+
+Every halfword of `.text` is looked up in both, so inlined functions, padding between functions and newlib code without debug info are covered. CI runs it on all six demo ELFs (M0, M3, M4, M7, M55 TrustZone, RV32), about 5,000 addresses each. It has been checked against two Arm toolchains (xPack GCC 15.2 with binutils 2.45, Debian/Ubuntu GCC 14.2 whose newlib carries debug info) and xPack RISC-V GCC 14.2 with binutils 2.43. Getting there took three binutils rules that are not in the DWARF spec: an address outside every loaded section is never looked up (functions removed by `--gc-sections` keep debug info at 0), a unit also owns its functions' ranges, and the symbol-table fallback ignores symbol sizes.
+
+File paths are shown relative to the build directory recorded in the ELF, which is what `lwsym.py` prints when run from there; change it in the box above the output.
+
 ## RISC-V
 
 RV32 in machine mode, bare metal. Install the entry once, before anything can trap:
@@ -304,6 +327,7 @@ make cross        # compile-only for M0+, M23, M33, M55 and friends
 make riscv        # needs riscv-none-elf-gcc and qemu-system-riscv32 (xPack builds in CI)
 make armv8m       # TrustZone Cortex-M55 on qemu-system-arm mps3-an547
 make footprint    # flash cost on Cortex-M3
+node tests/check_web.mjs examples/*/build/demo-*.elf   # browser symbolizer vs addr2line and the Python tools
 make count        # instructions per lw_log(), from a QEMU execution trace
 ./build/test_1024 1000000   # the random-ring trial from the table
 ```
@@ -320,6 +344,7 @@ make count        # instructions per lw_log(), from a QEMU execution trace
 - The backtrace is a heuristic: odd stack words that point right after a `BL`/`BLX`. Stale return addresses from earlier calls can show up, and frames whose return address lives in a callee-saved register will not.
 - RISC-V: RV32 machine mode only, no RV64, no S-mode/U-mode stacks, no PMP awareness. Tested on QEMU `virt` only. The trap stack is 512 bytes; the deepest path measured at `-Os` is about 370 bytes, so `-O0` builds may need `LW_TRAP_STACK=1024`. `mscratch` is overwritten on the way to a reset; if your RTOS keeps something there, call `lw_trap_capture()` from its handler instead.
 - TrustZone: the Secure side records everything; a Non-secure-only build cannot see SFSR or Secure state. Non-secure addresses in a Secure record are not symbolized against the Secure ELF.
+- Browser symbolizer: ELF32 little-endian and 32-bit DWARF only, no split DWARF (`.dwo`), no compressed debug sections, no C++ demangling. Checked only against GCC-built QEMU demo ELFs; Clang or IAR output may give different names or lines than addr2line.
 - Records are capped at 255 bytes; `lw_logf` truncates.
 - 16-bit sequence numbers and CRC, see the numbers table for what that costs.
 - Two different bugs with the same exception, fault bits, pc and lr share a signature. Signatures are per build: rebuild and the addresses move, which is what `--elf` grouping is for.

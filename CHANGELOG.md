@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 (2026-11-24)
+
+- Browser symbolizer on GitHub Pages (https://tahakocp.github.io/lastwords/): drop an ELF and an export or UART log, get the `lwdecode.py | lwsym.py` output. Runs locally in the page.
+- `web/lwcore.js`: export decoder, `lw_print` renderer, ELF32 + DWARF 2-5 line and function reader, port of `lwsym.py`. No dependencies, works in Node too.
+- `tests/check_web.mjs`: compares it with addr2line on every halfword of `.text` and with `lwdecode.py`/`lwsym.py` on the demo logs. Runs in the qemu, armv8m and riscv CI jobs (six ELFs, about 5,000 addresses each) and before each Pages deploy.
+- No change to the C library; device-side records and sizes are as in 0.4.1.
+
 ## 0.4.1 (2026-11-23)
 
 - Fix: a Non-secure thread running on its process stack was recorded from `MSP_NS`. In QEMU the EXC_RETURN.SPSEL bit a Secure handler gets for a Non-secure fault follows the Secure CONTROL, so the entry now picks `MSP_NS`/`PSP_NS` from `CONTROL_NS.SPSEL` (Non-secure handler mode: always `MSP_NS`).
